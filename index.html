@@ -1,0 +1,645 @@
+<title>ネジ外し工房</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@500;700&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #161e27;
+    --panel: #22303f;
+    --line: #3a4d63;
+    --ink: #e9eef3;
+    --muted: #8ea2b5;
+    --accent: #ffb020;
+    --danger: #ef4444;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #app {
+    height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    padding-inline: 16px;
+    padding-block: 8px;
+    gap: 6px;
+  }
+  #hud {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    max-width: 420px;
+    width: 100%;
+    margin-inline: auto;
+  }
+  .brand {
+    font-family: "Dela Gothic One", "Zen Kaku Gothic New", sans-serif;
+    font-size: 17px;
+    letter-spacing: 0.02em;
+    color: var(--accent);
+    margin-right: auto;
+  }
+  .stat { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.1; }
+  .stat .k { font-size: 10px; letter-spacing: 0.08em; color: var(--muted); }
+  .stat .v {
+    font-family: "Dela Gothic One", sans-serif;
+    font-size: 18px;
+    font-variant-numeric: tabular-nums;
+  }
+  button {
+    font: inherit;
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 12px;
+    cursor: pointer;
+  }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #stage {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas { display: block; touch-action: none; }
+  #modal {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: rgba(10, 14, 19, 0.62);
+  }
+  #modal[hidden] { display: none; }
+  #modal .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 22px 26px;
+    text-align: center;
+    display: grid;
+    gap: 10px;
+    min-width: 220px;
+  }
+  #mTitle {
+    margin: 0;
+    font-family: "Dela Gothic One", sans-serif;
+    font-size: 28px;
+    color: var(--accent);
+  }
+  #mSub { margin: 0; color: var(--muted); font-size: 13px; }
+  #mBtn { background: var(--accent); color: #1b1300; border-color: var(--accent); font-size: 15px; padding: 10px 16px; }
+</style>
+
+<div id="app">
+  <header id="hud">
+    <div class="brand">ネジ外し工房</div>
+    <div class="stat"><span class="k">STAGE</span><span id="lv" class="v">1</span></div>
+    <div class="stat"><span class="k">残りの箱</span><span id="left" class="v">0</span></div>
+    <button id="retry" type="button">やり直し</button>
+  </header>
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="modal" hidden>
+      <div class="card">
+        <p id="mTitle"></p>
+        <p id="mSub"></p>
+        <button id="mBtn" type="button"></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const { Engine, Bodies, Body, Composite, Constraint, Vertices } = Matter;
+
+  // ---- 定数 ----
+  const W = 400, H = 716;
+  const TAU = Math.PI * 2;
+  const PW = 40;          // 板の幅
+  const SR = 13;          // ねじ半径
+  const ACTIVE = 2;       // 同時に出る箱の数
+  const BUF = 5;          // 待機スロット数
+  const FLY = 0.38;       // ねじが飛ぶ時間(秒)
+  const COLS = 5, ROWS = 7;
+  const COLORS = [
+    { c: '#ef4444', d: '#8f1d1d' },
+    { c: '#3b82f6', d: '#1c3f8f' },
+    { c: '#facc15', d: '#8a6a06' },
+    { c: '#22c55e', d: '#146b35' },
+    { c: '#a855f7', d: '#5e2391' },
+    { c: '#fb923c', d: '#a8430f' },
+  ];
+  const TINTS = ['#e8c793', '#bfe0d8', '#f2bcbc', '#cfc7ee', '#f7dca8', '#c4dcf2'];
+
+  const lx = i => 60 + i * 70;
+  const ly = j => 236 + j * 72;
+  const boxX = i => 110 + i * 180;
+  const bufX = i => 64 + i * 68;
+  const BUF_Y = 150;
+
+  // ---- 状態 ----
+  let engine, planks, screws, boxes, buffer, queue, level, ended, flashBuf;
+
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const stage = document.getElementById('stage');
+  let scale = 1, dpr = 1;
+
+  // ---- 乱数 ----
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function shuffle(arr, rnd) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(rnd() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+  const rot = (x, y, a) => {
+    const c = Math.cos(a), s = Math.sin(a);
+    return { x: x * c - y * s, y: x * s + y * c };
+  };
+
+  // ---- ステージ生成 ----
+  // 格子点にねじ穴を置き、板は2点(時々3点)をつなぐ。
+  // 板の途中は他の板のねじ穴の上を通ってよい = 後から置いた(上の層の)板が下のねじを隠す。
+  function genLevel(lv) {
+    const rnd = mulberry32(lv * 7919 + 13);
+    const nPlanks = Math.min(7 + lv, 14);
+    const nColors = Math.min(3 + Math.floor((lv - 1) / 2), COLORS.length);
+    const used = new Set();
+    const out = [];
+    const dirs = [[1, 0], [0, 1], [1, 1], [1, -1], [1, 0], [0, 1]];
+    let tries = 0;
+    while (out.length < nPlanks && tries < 1000) {
+      tries++;
+      const d = dirs[Math.floor(rnd() * dirs.length)];
+      const span = 1 + Math.floor(rnd() * 3);
+      if (d[0] && d[1] && span > 2) continue;
+      const x0 = Math.floor(rnd() * COLS), y0 = Math.floor(rnd() * ROWS);
+      const x1 = x0 + d[0] * span, y1 = y0 + d[1] * span;
+      if (x1 < 0 || x1 >= COLS || y1 < 0 || y1 >= ROWS) continue;
+      const holes = [[x0, y0], [x1, y1]];
+      if (span === 2 && rnd() < 0.5) holes.splice(1, 0, [x0 + d[0], y0 + d[1]]);
+      if (holes.some(h => used.has(h[0] + ',' + h[1]))) continue;
+      holes.forEach(h => used.add(h[0] + ',' + h[1]));
+      out.push({ a: [x0, y0], b: [x1, y1], holes, tint: Math.floor(rnd() * TINTS.length) });
+    }
+    let S = out.reduce((n, p) => n + p.holes.length, 0);
+    while (S % 3 !== 0) S -= out.pop().holes.length;
+
+    // 箱の順番を先に決め、上の層のねじほど早い箱の色になるよう割り当てる(詰みにくくする)
+    const boxQueue = [];
+    for (let i = 0; i < S / 3; i++) boxQueue.push(i % nColors);
+    shuffle(boxQueue, rnd);
+    const L = boxQueue.flatMap(c => [c, c, c]);
+    const win = Math.min(4 + lv, 11);
+    for (let i = 0; i < L.length; i++) {
+      const j = i + Math.floor(rnd() * Math.min(win, L.length - i));
+      [L[i], L[j]] = [L[j], L[i]];
+    }
+    const list = [];
+    out.forEach((p, li) => p.holes.forEach((h, hi) => list.push({ pl: li, hi, key: li + rnd() * 2.5 })));
+    list.sort((a, b) => b.key - a.key);
+    list.forEach((s, i) => { s.color = L[i]; });
+    return { planks: out, screws: list, queue: boxQueue, rnd };
+  }
+
+  // ---- ステージ構築 ----
+  function loadLevel(lv) {
+    level = lv;
+    try { localStorage.setItem('screw-level', String(lv)); } catch (e) {}
+    ended = false;
+    flashBuf = 0;
+    engine = Engine.create();
+    engine.gravity.y = 1.1;
+    const data = genLevel(lv);
+
+    planks = data.planks.map((p, li) => {
+      const ax = lx(p.a[0]), ay = ly(p.a[1]), bx = lx(p.b[0]), by = ly(p.b[1]);
+      const cx = (ax + bx) / 2, cy = (ay + by) / 2;
+      const ang = Math.atan2(by - ay, bx - ax);
+      const len = Math.hypot(bx - ax, by - ay) + PW;
+      const body = Bodies.rectangle(cx, cy, len, PW, {
+        angle: ang,
+        chamfer: { radius: PW / 2 - 1 },
+        frictionAir: 0.012,
+        collisionFilter: { group: -1 },   // 板同士はぶつからない(層が違う)
+      });
+      Body.setStatic(body, true);
+      Composite.add(engine.world, body);
+      const holes = p.holes.map(h => rot(lx(h[0]) - cx, ly(h[1]) - cy, -ang));
+      return { body, layer: li, tint: TINTS[p.tint], holes, screws: [], constraint: null, gone: false };
+    });
+
+    screws = data.screws.map(s => {
+      const sc = {
+        plank: planks[s.pl], hole: s.hi, color: s.color, state: 'board',
+        rot: data.rnd() * TAU, shake: 0, from: null, dest: null, t: 0,
+      };
+      sc.plank.screws.push(sc);
+      return sc;
+    });
+
+    queue = data.queue.slice();
+    boxes = new Array(ACTIVE).fill(null);
+    buffer = new Array(BUF).fill(null);
+    for (let i = 0; i < ACTIVE; i++) spawnBox(i);
+    document.getElementById('lv').textContent = lv;
+    document.getElementById('modal').hidden = true;
+    updateHud();
+  }
+
+  function updateHud() {
+    document.getElementById('left').textContent = queue.length + boxes.filter(Boolean).length;
+  }
+
+  // ---- 座標 ----
+  function holeWorld(p, i) {
+    const h = p.holes[i];
+    const r = rot(h.x, h.y, p.body.angle);
+    return { x: p.body.position.x + r.x, y: p.body.position.y + r.y };
+  }
+  const ease = t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  function boxY(b) {
+    return 58 - (1 - ease(b.enter)) * 90 - ease(b.leave) * 90;
+  }
+  function destPos(d) {
+    if (d.kind === 'box') return { x: boxX(d.box.idx) + (d.slot - 1) * 44, y: boxY(d.box) };
+    return { x: bufX(d.idx), y: BUF_Y };
+  }
+  function screwPos(s) {
+    if (s.state === 'board') return holeWorld(s.plank, s.hole);
+    if (s.state === 'fly') {
+      const to = destPos(s.dest), e = ease(s.t);
+      return {
+        x: s.from.x + (to.x - s.from.x) * e,
+        y: s.from.y + (to.y - s.from.y) * e - Math.sin(Math.PI * s.t) * 40,
+      };
+    }
+    return destPos(s.dest);
+  }
+
+  // ---- 遮蔽判定: 上の層の板がねじに少しでも被っていたら外せない ----
+  const SAMPLES = [[0, 0]];
+  for (let k = 0; k < 8; k++) SAMPLES.push([Math.cos(k * TAU / 8) * (SR - 2), Math.sin(k * TAU / 8) * (SR - 2)]);
+  function isBlocked(s) {
+    const p = s.plank, c = holeWorld(p, s.hole);
+    for (const q of planks) {
+      if (q.gone || q.layer <= p.layer) continue;
+      for (const [ox, oy] of SAMPLES) {
+        if (Vertices.contains(q.body.vertices, { x: c.x + ox, y: c.y + oy })) return true;
+      }
+    }
+    return false;
+  }
+
+  // ---- 箱 ----
+  function spawnBox(i) {
+    if (!queue.length) { boxes[i] = null; updateHud(); return; }
+    const b = { idx: i, color: queue.shift(), reserved: 0, arrived: 0, items: [], enter: 0, leaving: false, leave: 0 };
+    boxes[i] = b;
+    pullFromBuffer(b);
+    updateHud();
+  }
+  function openBoxFor(color) {
+    return boxes.find(b => b && !b.leaving && b.color === color && b.reserved < 3);
+  }
+  function pullFromBuffer(b) {
+    for (let k = 0; k < BUF; k++) {
+      const s = buffer[k];
+      if (s && s.state === 'buffer' && s.color === b.color && b.reserved < 3 && !b.leaving) {
+        buffer[k] = null;
+        launch(s, { kind: 'box', box: b, slot: b.reserved++ });
+        b.items.push(s);
+      }
+    }
+  }
+
+  function launch(s, dest) {
+    s.from = screwPos(s);
+    s.dest = dest;
+    s.state = 'fly';
+    s.t = 0;
+  }
+
+  function arrive(s) {
+    if (s.dest.kind === 'box') {
+      s.state = 'box';
+      const b = s.dest.box;
+      b.arrived++;
+      if (b.arrived === 3) { b.leaving = true; b.leave = 0; chime(); }
+    } else {
+      s.state = 'buffer';
+      boxes.forEach(b => { if (b && !b.leaving) pullFromBuffer(b); });
+    }
+  }
+
+  // ---- 板からねじを抜く ----
+  function detach(s) {
+    const p = s.plank;
+    p.screws = p.screws.filter(x => x !== s);
+    if (p.constraint) { Composite.remove(engine.world, p.constraint); p.constraint = null; }
+    if (p.screws.length === 1) {
+      const r = p.screws[0];
+      const w = holeWorld(p, r.hole);
+      Body.setStatic(p.body, false);
+      p.constraint = Constraint.create({
+        pointA: { x: w.x, y: w.y },
+        bodyB: p.body,
+        pointB: { x: w.x - p.body.position.x, y: w.y - p.body.position.y },
+        length: 0, stiffness: 0.9, damping: 0.05,
+      });
+      Composite.add(engine.world, p.constraint);
+    } else if (p.screws.length === 0) {
+      Body.setStatic(p.body, false);
+    }
+  }
+
+  function tapScrew(s) {
+    if (isBlocked(s)) { s.shake = 0.3; buzz(); return; }
+    const b = openBoxFor(s.color);
+    let dest;
+    if (b) {
+      dest = { kind: 'box', box: b, slot: b.reserved++ };
+      b.items.push(s);
+    } else {
+      const k = buffer.indexOf(null);
+      if (k < 0) { flashBuf = 0.45; buzz(); return; }
+      buffer[k] = s;
+      dest = { kind: 'buf', idx: k };
+    }
+    const from = holeWorld(s.plank, s.hole);
+    detach(s);
+    s.state = 'board';
+    launch(s, dest);
+    s.from = from;
+    click();
+    try { navigator.vibrate && navigator.vibrate(12); } catch (e) {}
+  }
+
+  // ---- 入力 ----
+  cv.addEventListener('pointerdown', e => {
+    if (ended) return;
+    const r = cv.getBoundingClientRect();
+    const x = (e.clientX - r.left) / scale, y = (e.clientY - r.top) / scale;
+    let best = null;
+    for (const s of screws) {
+      if (s.state !== 'board') continue;
+      const p = holeWorld(s.plank, s.hole);
+      if (Math.hypot(p.x - x, p.y - y) < 22 && (!best || s.plank.layer > best.plank.layer)) best = s;
+    }
+    if (best) tapScrew(best);
+  });
+  document.getElementById('retry').addEventListener('click', () => loadLevel(level));
+  document.getElementById('mBtn').addEventListener('click', () => {
+    const won = document.getElementById('mBtn').dataset.won === '1';
+    loadLevel(won ? level + 1 : level);
+  });
+
+  // ---- 音 ----
+  let actx = null;
+  function tone(f, d, type, vol, slide) {
+    try {
+      if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+      const t0 = actx.currentTime;
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(f, t0);
+      o.frequency.exponentialRampToValueAtTime(f * slide, t0 + d);
+      g.gain.setValueAtTime(vol, t0);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + d);
+      o.connect(g).connect(actx.destination);
+      o.start(t0); o.stop(t0 + d);
+    } catch (e) {}
+  }
+  const click = () => tone(620, 0.07, 'triangle', 0.18, 1.8);
+  const buzz = () => tone(140, 0.12, 'square', 0.06, 0.8);
+  const chime = () => { tone(880, 0.12, 'sine', 0.14, 1.0); setTimeout(() => tone(1320, 0.16, 'sine', 0.12, 1.0), 90); };
+
+  // ---- 進行 ----
+  function idle() {
+    return !screws.some(s => s.state === 'fly') && boxes.every(b => !b || (!b.leaving && b.enter >= 1));
+  }
+  function canMove() {
+    if (buffer.includes(null)) return true;
+    return screws.some(s => s.state === 'board' && !isBlocked(s) && openBoxFor(s.color));
+  }
+  function finish(won) {
+    ended = true;
+    setTimeout(() => {
+      document.getElementById('mTitle').textContent = won ? 'クリア' : '詰み';
+      document.getElementById('mSub').textContent = won
+        ? `STAGE ${level} の板を全部落とした`
+        : '待機スロットが埋まって、入れられるねじが無い';
+      const btn = document.getElementById('mBtn');
+      btn.textContent = won ? '次のステージへ' : 'もう一回';
+      btn.dataset.won = won ? '1' : '0';
+      document.getElementById('modal').hidden = false;
+    }, won ? 700 : 350);
+  }
+
+  function update(dt) {
+    if (flashBuf > 0) flashBuf = Math.max(0, flashBuf - dt);
+    for (const s of screws) {
+      if (s.shake > 0) s.shake = Math.max(0, s.shake - dt);
+      if (s.state === 'fly') {
+        s.t += dt / FLY;
+        if (s.t >= 1) { s.t = 1; arrive(s); }
+      }
+    }
+    for (let i = 0; i < ACTIVE; i++) {
+      const b = boxes[i];
+      if (!b) continue;
+      if (b.enter < 1) b.enter = Math.min(1, b.enter + dt / 0.3);
+      if (b.leaving) {
+        b.leave += dt / 0.35;
+        if (b.leave >= 1) {
+          b.items.forEach(s => { s.state = 'done'; });
+          spawnBox(i);
+        }
+      }
+    }
+    for (const p of planks) {
+      if (!p.gone && p.body.position.y > H + 200) {
+        p.gone = true;
+        Composite.remove(engine.world, p.body);
+      }
+    }
+    if (!ended && idle()) {
+      const onBoard = screws.some(s => s.state === 'board');
+      if (!onBoard && !queue.length && boxes.every(b => !b)) finish(true);
+      else if (onBoard && !canMove()) finish(false);
+    }
+  }
+
+  // ---- 描画 ----
+  let peg = null;
+  function makePeg() {
+    const c = document.createElement('canvas');
+    c.width = c.height = 18;
+    const g = c.getContext('2d');
+    g.fillStyle = 'rgba(0,0,0,0.28)';
+    g.beginPath(); g.arc(9, 9, 1.7, 0, TAU); g.fill();
+    peg = ctx.createPattern(c, 'repeat');
+  }
+  function rr(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  function drawScrew(x, y, ci, a, sc) {
+    const C = COLORS[ci];
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(sc, sc);
+    ctx.beginPath(); ctx.arc(1.5, 2.5, SR, 0, TAU); ctx.fillStyle = 'rgba(0,0,0,0.32)'; ctx.fill();
+    ctx.rotate(a);
+    ctx.beginPath(); ctx.arc(0, 0, SR, 0, TAU);
+    ctx.fillStyle = C.c; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = C.d; ctx.stroke();
+    ctx.beginPath(); ctx.arc(-3, -4, SR * 0.5, 0, TAU); ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.fill();
+    ctx.strokeStyle = C.d; ctx.lineWidth = 3.2; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-6, 0); ctx.lineTo(6, 0); ctx.moveTo(0, -6); ctx.lineTo(0, 6); ctx.stroke();
+    ctx.restore();
+  }
+  function drawSlot(x, y) {
+    ctx.beginPath(); ctx.arc(x, y, SR + 2, 0, TAU);
+    ctx.fillStyle = '#10171f'; ctx.fill();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.stroke();
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    // 箱
+    for (let i = 0; i < ACTIVE; i++) {
+      const b = boxes[i], x = boxX(i);
+      if (!b) {
+        ctx.setLineDash([6, 6]);
+        rr(x - 75, 26, 150, 64, 12);
+        ctx.strokeStyle = '#3a4d63'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.setLineDash([]);
+        continue;
+      }
+      const y = boxY(b), C = COLORS[b.color];
+      ctx.save();
+      ctx.globalAlpha = 1 - ease(b.leave);
+      rr(x - 75, y - 32, 150, 64, 12);
+      ctx.fillStyle = C.d; ctx.fill();
+      ctx.lineWidth = 3; ctx.strokeStyle = C.c; ctx.stroke();
+      for (let k = 0; k < 3; k++) drawSlot(x + (k - 1) * 44, y);
+      for (const s of b.items) if (s.state === 'box') drawScrew(x + (s.dest.slot - 1) * 44, y, s.color, s.rot, 1);
+      ctx.restore();
+    }
+
+    // 待機スロット
+    const filled = buffer.filter(Boolean).length;
+    rr(24, BUF_Y - 26, 352, 52, 12);
+    ctx.fillStyle = '#1d2835'; ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = flashBuf > 0 && Math.floor(flashBuf * 14) % 2 === 0 ? '#ef4444'
+      : filled >= BUF - 1 ? '#b8452f' : '#3a4d63';
+    ctx.stroke();
+    for (let k = 0; k < BUF; k++) drawSlot(bufX(k), BUF_Y);
+    for (const s of buffer) if (s && s.state === 'buffer') drawScrew(bufX(s.dest.idx), BUF_Y, s.color, s.rot, 1);
+
+    // 背板(有孔ボード)
+    rr(14, 196, 372, 512, 16);
+    ctx.fillStyle = '#2a3a4c'; ctx.fill();
+    ctx.save(); ctx.clip();
+    ctx.fillStyle = peg; ctx.fillRect(14, 196, 372, 512);
+    ctx.restore();
+    for (let i = 0; i < COLS; i++) for (let j = 0; j < ROWS; j++) {
+      ctx.beginPath(); ctx.arc(lx(i), ly(j), 7, 0, TAU);
+      ctx.fillStyle = '#18222d'; ctx.fill();
+    }
+
+    // 板(下の層から)とねじ
+    for (const p of planks) {
+      if (p.gone) continue;
+      const v = p.body.vertices;
+      ctx.beginPath();
+      ctx.moveTo(v[0].x, v[0].y);
+      for (let k = 1; k < v.length; k++) ctx.lineTo(v[k].x, v[k].y);
+      ctx.closePath();
+      ctx.globalAlpha = 0.8; ctx.fillStyle = p.tint; ctx.fill();
+      ctx.globalAlpha = 1; ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(20,28,38,0.55)'; ctx.stroke();
+      for (let k = 0; k < p.holes.length; k++) {
+        const w = holeWorld(p, k);
+        ctx.beginPath(); ctx.arc(w.x, w.y, 9.5, 0, TAU);
+        ctx.fillStyle = 'rgba(16,22,30,0.5)'; ctx.fill();
+      }
+      for (const s of p.screws) {
+        const w = holeWorld(p, s.hole);
+        const sx = s.shake > 0 ? Math.sin(s.shake * 70) * 3.5 * (s.shake / 0.3) : 0;
+        drawScrew(w.x + sx, w.y, s.color, s.rot + p.body.angle, 1);
+      }
+    }
+
+    // 飛んでいるねじ
+    for (const s of screws) {
+      if (s.state !== 'fly') continue;
+      const p = screwPos(s);
+      drawScrew(p.x, p.y, s.color, s.rot + s.t * 9, 1 + 0.28 * Math.sin(Math.PI * s.t));
+    }
+  }
+
+  // ---- 画面合わせ ----
+  function fit() {
+    const aw = stage.clientWidth, ah = stage.clientHeight;
+    scale = Math.min(aw / W, ah / H);
+    dpr = window.devicePixelRatio || 1;
+    cv.style.width = W * scale + 'px';
+    cv.style.height = H * scale + 'px';
+    cv.width = Math.round(W * scale * dpr);
+    cv.height = Math.round(H * scale * dpr);
+    ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
+    makePeg();
+  }
+  window.addEventListener('resize', fit);
+
+  // ---- ループ ----
+  const STEP = 1000 / 60;
+  let last = performance.now(), acc = 0;
+  function frame(now) {
+    let dt = now - last; last = now;
+    if (dt > 100) dt = 100;
+    acc += dt;
+    while (acc >= STEP) { Engine.update(engine, STEP); acc -= STEP; }
+    update(dt / 1000);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  let startLv = 1;
+  try { startLv = parseInt(localStorage.getItem('screw-level'), 10) || 1; } catch (e) {}
+  fit();
+  loadLevel(startLv);
+  requestAnimationFrame(frame);
+})();
+</script>
