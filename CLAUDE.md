@@ -12,5 +12,6 @@
 - 試作は `index.html` 1ファイル。Artifact のページ規約（`<!doctype>`/`<html>`/`<body>` を書かない、外部スクリプトは cdnjs など許可された CDN のみ）に従っている。ローカルで開くときは doctype と body で包んだプレビュー用ファイルを別に作る
 - 公開ページの更新は、この会話で公開していなければ README の URL を `url` に渡して再公開する
 - 変更したら、公開ページをスマホで触って確かめるのはユーザー。こちらは画面が崩れていないことと JS エラーが無いことまでを確認し、手触りは確認していないと正直に言う
-- 現在は lab リポジトリの中にある。本格化したら独立したリポジトリに移す（README の候補5）
-- 作業ログは `lab/logs/yyyy-MM.md` に書く
+- 独立リポジトリ（GitHub: shostako/screw-puzzle、private）。2026-09-27 に lab から履歴ごと切り出した。`~/ClaudeCode` の親リポからはホワイトリスト方式で除外されている
+- 作業ログはこのリポの `logs/yyyy-MM.md` に書く
+- 「同期して」の対象（git-sync の manifest に category 3 で登録済み）
