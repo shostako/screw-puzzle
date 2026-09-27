@@ -193,6 +193,20 @@
     cursor: pointer;
   }
   .pickbtn small { font-size: 12px; font-weight: 700; text-shadow: none; color: #fff4dc; }
+  /* 難しさのボタン: 左に丸い顔、右に名前と説明 */
+  .pickbtn[data-diff] { grid-template-columns: 44px 1fr; column-gap: 10px; align-items: center; padding-left: 10px; }
+  .pickbtn[data-diff] > span, .pickbtn[data-diff] > small { grid-column: 2; }
+  .pickface {
+    grid-row: span 2;
+    width: 44px;
+    height: 44px;
+    box-sizing: border-box;
+    border: 2.5px solid #fff4dc;
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 40%, #fff8ea, #ffd98f);
+    object-fit: cover;
+    box-shadow: 0 2px 0 var(--wood-shadow);
+  }
   .pickbtn.on { background: linear-gradient(#78e063, var(--go)); border-color: var(--go-deep); box-shadow: 0 4px 0 var(--go-deep); }
   .pickbtn:active, .subbtn:active { transform: translateY(3px); }
   /* 設定(歯車は盤面の右上。見出しの帯には3つ目のボタンを置く幅が無い) */
@@ -335,9 +349,9 @@
       <div class="card">
         <p class="pickHead outlined">ランダム</p>
         <p id="pickNote">毎回ちがう盤面。どれも解ける手順がある</p>
-        <button class="pickbtn" type="button" data-diff="0">やさしい<small></small></button>
-        <button class="pickbtn" type="button" data-diff="1">ふつう<small></small></button>
-        <button class="pickbtn" type="button" data-diff="2">むずかしい<small></small></button>
+        <button class="pickbtn" type="button" data-diff="0"><img class="pickface" alt="" hidden><span>やさしい</span><small></small></button>
+        <button class="pickbtn" type="button" data-diff="1"><img class="pickface" alt="" hidden><span>ふつう</span><small></small></button>
+        <button class="pickbtn" type="button" data-diff="2"><img class="pickface" alt="" hidden><span>むずかしい</span><small></small></button>
         <button id="pickBack" class="subbtn" type="button">ステージに戻る</button>
         <button id="pickClose" class="subbtn" type="button">とじる</button>
       </div>
@@ -1496,6 +1510,7 @@
   function build(lv, seed) {
     clearTimeout(finishTimer);
     ended = false;
+    liveReset();
     flashBuf = 0;
     stuckT = 0; calmT = 0;
     engine = Engine.create();
@@ -1645,7 +1660,7 @@
       s.state = 'box';
       const b = s.dest.box;
       b.arrived++;
-      if (b.arrived === 3) { b.leaving = true; b.leave = 0; if (!quiet) chime(); }
+      if (b.arrived === 3) { b.leaving = true; b.leave = 0; if (!quiet) { chime(); liveSay('good', 1.8); liveHop(14); } }
     } else {
       s.state = 'buffer';
       boxes.forEach(b => { if (b && !b.leaving) pullFromBuffer(b); });
@@ -1746,6 +1761,7 @@
     updateHud();
     click();
     vibe(18, 12);
+    liveHop(s.plank.screws.length ? 5 : 11);     // 板が落ちる手は大きく跳ねる
   }
 
   // ---- 戻る ----
@@ -1780,6 +1796,7 @@
     clearTimeout(finishTimer);
     clearFx();
     ended = false; stuckT = 0; calmT = 0; flashBuf = 0;
+    live.end = null;
     document.getElementById('modal').hidden = true;
     quiet = true;
     for (const p of planks) p.screws = [];
@@ -1847,6 +1864,7 @@
     play.rewinds++;
     hint = { s: fork, t: 4, go: false };
     toast(k ? `${back}手戻した。赤い輪のねじが分かれ目` : '最初まで戻した。赤い輪のねじが分かれ目', 'oopsFace');
+    liveSay('oops', 2.5);
   }
   // ヒント: 今の局面から解ける手順を探し、その最初の手のねじに金色の輪を出す(使うと評価が下がる)
   async function showHint() {
@@ -1857,20 +1875,24 @@
     const path = id === boardId ? solveFull(level.plates, level.list, level.queue, level.model, SOLVE_BUDGET, hist.map(h => h.i)) : null;
     btn.disabled = false;
     if (id !== boardId || ended || (path && !path.length)) return;   // 外し終えてクリアの画面を待っているところ
-    if (!path) { toast('ここからは解ける手順が見つからない。詰んだら「解ける所まで戻る」が使える', 'oopsFace'); return; }
+    if (!path) { toast('ここからは解ける手順が見つからない。詰んだら「解ける所まで戻る」が使える', 'oopsFace'); liveSay('oops', 2.5); return; }
     const s = screws[path[0]];
     hint = { s, t: 5, go: true };
     play.hints++;
-    toast(known(s.plank) && !isBlocked(s) ? '金色の輪のねじが次の一手' : '次は金色の輪（揺れが収まってから）', 'idea');
+    toast(known(s.plank) && !isBlocked(s) ? '金色の輪のねじが次の一手' : '次は金色の輪（揺れが収まってから）', 'ideaFace');
+    liveSay('idea', 3);
   }
   // ---- キャラ ----
   // 画像は assets/chara/ に置く(scripts/prep_chara.py が art/chara/ の原画から作る)。
   // 起動時に読み込んでおき、場面ごとに差し替える。読めなかったときは出さない(単体で開いたページなど)
-  const CHARA = { clear: 'clear.webp', good: 'good.webp', oops: 'oops.webp', cry: 'cry.webp', idea: 'idea-face.webp', oopsFace: 'oops-face.webp' };
-  const charaOk = {};
+  const CHARA = {
+    idle: 'idle.webp', clear: 'clear.webp', good: 'good.webp', oops: 'oops.webp', cry: 'cry.webp', idea: 'idea.webp',   // 全身
+    ideaFace: 'idea-face.webp', oopsFace: 'oops-face.webp', smileFace: 'smile-face.webp', goodFace: 'good-face.webp', cryFace: 'cry-face.webp',   // 丸い顔
+  };
+  const charaOk = {}, charaImg = {};
   for (const k in CHARA) {
     const im = new Image();
-    im.onload = () => { charaOk[k] = im.src; };
+    im.onload = () => { charaOk[k] = im.src; charaImg[k] = im; };
     im.src = 'assets/chara/' + CHARA[k];
   }
   // 付け直して、出てくる動きを最初から
@@ -1881,6 +1903,83 @@
     img.src = charaOk[k];
     void img.offsetWidth;
     if (anim) img.classList.add(anim);
+  }
+
+  // ---- 盤面の脇のキャラ ----
+  // 箱の列の右、設定の歯車の下に立つ。板より先(奥)に描くので、揺れた板が重なれば板の方が手前になる。
+  // 表情はふだん待機スロットの埋まり具合で決まり(4つで困り顔、5つで涙)、出来事があるとしばらく上書きする。
+  // 動き: ふだんは小さく揺れ、ねじを外すと小さく、板が落ちたり箱が埋まったりすると大きく跳ねる。
+  // 端末が「動きを減らす」設定なら、揺れも跳ねも無しで表情だけ変える
+  const LIVE = { x: 357, foot: 160, h: 108 };   // 盤面の座標: 立ち位置の中心、足元の高さ、背の高さ(いちばん幅の広い絵で 314〜400)
+  const HOP = 0.42;                              // 1回跳ねる時間(秒)
+  const live = { t: 0, say: null, sayT: 0, end: null, shown: null, popT: 1, hopT: HOP, hopAmp: 0, hops: 0 };
+  const liveCache = {};                           // 表情ごとに、今の画面の画素数へ縮めておいた絵
+  function liveReset() {
+    Object.assign(live, { say: null, sayT: 0, end: null, hopT: HOP, hops: 0 });
+    liveHop(10);
+  }
+  function liveSay(face, sec) { live.say = face; live.sayT = sec; }
+  function liveHop(amp, n = 1) {
+    if (live.hopT < HOP && amp < live.hopAmp) return;      // 大きく跳ねている途中は、小さい跳ねで遮らない
+    live.hopAmp = amp; live.hopT = 0; live.hops = n - 1;
+  }
+  function liveFace() {
+    if (live.end) return live.end;
+    if (live.sayT > 0) return live.say;
+    const n = buffer.filter(Boolean).length;
+    return n >= BUF ? 'cry' : n >= BUF - 1 ? 'oops' : 'idle';
+  }
+  function updateLive(dt) {
+    live.t += dt; live.popT += dt; live.hopT += dt;
+    if (live.sayT > 0) live.sayT -= dt;
+    if (live.hopT >= HOP && live.hops > 0) { live.hops--; live.hopT = 0; }
+  }
+  function liveImage(face) {
+    const im = charaImg[face];
+    if (!im) return null;
+    const px = scale * dpr;
+    let c = liveCache[face];
+    if (!c || c.px !== px) {                      // 毎フレーム大きな絵を縮めると粗くて重いので、画面の画素数で一度だけ縮める
+      const h = LIVE.h, w = h * im.naturalWidth / im.naturalHeight;
+      const off = document.createElement('canvas');
+      off.width = Math.max(1, Math.round(w * px));
+      off.height = Math.max(1, Math.round(h * px));
+      const g = off.getContext('2d');
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(im, 0, 0, off.width, off.height);
+      c = liveCache[face] = { cv: off, w, h, px };
+    }
+    return c;
+  }
+  const outBack = u => 1 + 2.7 * Math.pow(u - 1, 3) + 1.7 * Math.pow(u - 1, 2);
+  function drawLive() {
+    const face = liveFace();
+    if (face !== live.shown) { live.shown = face; live.popT = 0; }
+    const c = liveImage(face);
+    if (!c) return;
+    let y = 0, rot = 0, sx = 1, sy = 1;
+    if (full()) {
+      const sad = face === 'cry' || face === 'oops';
+      y = Math.sin(live.t * (sad ? 1.7 : 2.6)) * (sad ? 1.2 : 2.2);
+      rot = Math.sin(live.t * (sad ? 0.9 : 1.3)) * (sad ? 0.02 : 0.045);
+      if (face === 'cry') rot += Math.sin(live.t * 24) * 0.012;       // すすり泣きの震え
+      if (live.hopT < HOP) {
+        const u = live.hopT / HOP;
+        y -= live.hopAmp * 4 * u * (1 - u);
+        const q = u < 0.18 ? 1 - u / 0.18 : u > 0.82 ? (u - 0.82) / 0.18 : 0;   // 踏み切りと着地でつぶれる
+        sx = 1 + 0.07 * q; sy = 1 - 0.07 * q;
+      }
+      if (live.popT < 0.32) {                                        // 表情が変わったら、ぽんと出る
+        const k = 0.86 + 0.14 * outBack(live.popT / 0.32);
+        sx *= k; sy *= k;
+      }
+    }
+    ctx.save();
+    ctx.translate(LIVE.x, LIVE.foot + y);
+    ctx.rotate(rot);
+    ctx.scale(sx, sy);
+    ctx.drawImage(c.cv, -c.w / 2, -c.h, c.w, c.h);
+    ctx.restore();
   }
 
   let toastTimer = null;
@@ -1921,6 +2020,7 @@
   $('mBack').addEventListener('click', () => loadLevel(stageLv));
   // サイコロ: 難しさを選んでランダムな盤面へ
   const pickBtns = [...document.querySelectorAll('.pickbtn[data-diff]')];
+  const PICK_FACE = ['smileFace', 'goodFace', 'cryFace'];   // やさしいは笑顔、ふつうはウインク、むずかしいは涙目
   pickBtns.forEach(b => {
     const d = DIFFS[+b.dataset.diff];
     b.querySelector('small').textContent = `${colorsFor(d.lv)}色・${tierGoal(d.lv)}段` + (d.lv >= 5 ? '・先読みが要る' : '');
@@ -1931,6 +2031,7 @@
     try { last = parseInt(localStorage.getItem('screw-rand-diff'), 10); } catch (e) {}
     if (!(last >= 0 && last < DIFFS.length)) last = 1;
     pickBtns.forEach(b => b.classList.toggle('on', +b.dataset.diff === last));
+    pickBtns.forEach(b => showChara(b.querySelector('.pickface'), PICK_FACE[+b.dataset.diff]));
     $('pickBack').hidden = cur.mode === 'stage';
     $('pickBack').textContent = `ステージ ${stageLv} に戻る`;
     $('pick').hidden = false;
@@ -2099,6 +2200,8 @@
   let finishTimer = null;
   function finish(won) {
     ended = true;
+    live.end = won ? 'clear' : 'cry';
+    if (won) liveHop(18, mega() ? 4 : 2);
     clearTimeout(finishTimer);
     if (won) celebrate();                         // クラッカーが弾けてから、クリアの画面を出す
     finishTimer = setTimeout(() => {
@@ -2131,6 +2234,7 @@
   }
 
   function update(dt) {
+    updateLive(dt);
     if (flashBuf > 0) flashBuf = Math.max(0, flashBuf - dt);
     updateTop();
     for (const p of planks) {             // 新しく見えた板やねじの色はふわっと出す
@@ -2290,6 +2394,7 @@
 
   function draw() {
     ctx.clearRect(0, 0, W, H);
+    drawLive();                           // いちばん奥
 
     // 箱
     for (let i = 0; i < ACTIVE; i++) {

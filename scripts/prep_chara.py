@@ -5,11 +5,12 @@
 要るもの: Pillow(WebP 対応)。
 
 - 全身の絵: 透明な余白を削って縦 540px の WebP。画面では最大 180px 前後で出すので、画素3倍の端末でも足りる
-- 吹き出しの顔: 顔まわりの正方形を 144px の WebP。画面では 48px で出す
+  ふだんの立ち絵(idle)は最初の1枚(base.png)から作る。これだけ白いフチが無いので、ほかに合わせて付ける
+- 丸い顔: 顔まわりの正方形を 144px の WebP。画面では 40〜50px で出す
 - アイコン: 胸から上の絵を 192px と 180px の PNG(ホーム画面に置いたときの印)
 """
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageFilter
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / 'art' / 'chara'
@@ -17,18 +18,36 @@ OUT = ROOT / 'assets' / 'chara'
 
 BODY_H = 540
 FACE_PX = 144
-# 顔まわりの切り出し位置(原画 1024x1536 の座標)。帽子の先と、ひらめきの電球まで入れる
+# 顔まわりの切り出し: 出力名 -> (原画, 原画の座標での正方形)。帽子の先と、ひらめきの電球まで入れる
 FACES = {
-    'idea': (0, 20, 940, 960),
-    'oops': (100, 40, 940, 880),
+    'idea': ('idea', (0, 20, 940, 960)),
+    'oops': ('oops', (100, 40, 940, 880)),
+    'good': ('good', (100, 60, 940, 900)),
+    'cry': ('cry', (60, 160, 980, 1080)),
+    'smile': ('face', (180, 40, 1100, 960)),
 }
-BODIES = ('clear', 'good', 'oops', 'cry')
+BODIES = ('clear', 'good', 'oops', 'cry', 'idea')
+RIM = 5            # idle に付ける白いフチの太さ(縦 540px のときの画素)。ほかの絵のフチとだいたい同じ
 
 
 def trim(im):
     """ほぼ透明な画素(不透明度 8 以下)を除いた外接矩形で切る"""
     box = im.getchannel('A').point(lambda v: 255 if v > 8 else 0).getbbox()
     return im.crop(box)
+
+
+def add_rim(im, r):
+    """外周に太さ r の白いフチを付ける(はみ出さないよう先に r+2 だけ余白を足す)"""
+    pad = r + 2
+    base = Image.new('RGBA', (im.width + 2 * pad, im.height + 2 * pad), (0, 0, 0, 0))
+    base.alpha_composite(im, (pad, pad))
+    solid = base.getchannel('A').point(lambda v: 255 if v > 40 else 0)
+    solid = solid.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))   # 原画の細かな点はフチで膨らませない
+    rim = solid.filter(ImageFilter.MaxFilter(2 * r + 1)).filter(ImageFilter.GaussianBlur(0.8))
+    out = Image.new('RGBA', base.size, (255, 255, 255, 0))
+    out.putalpha(rim)
+    out.alpha_composite(base)
+    return out
 
 
 def save_webp(im, path):
@@ -43,8 +62,12 @@ def main():
         im = trim(Image.open(SRC / f'{name}.png').convert('RGBA'))
         w = round(im.width * BODY_H / im.height)
         save_webp(im.resize((w, BODY_H), Image.LANCZOS), OUT / f'{name}.webp')
-    for name, box in FACES.items():
-        im = Image.open(SRC / f'{name}.png').convert('RGBA').crop(box)
+    im = trim(Image.open(SRC / 'base.png').convert('RGBA'))
+    h = BODY_H - 2 * (RIM + 2)
+    im = add_rim(im.resize((round(im.width * h / im.height), h), Image.LANCZOS), RIM)
+    save_webp(im, OUT / 'idle.webp')
+    for name, (src, box) in FACES.items():
+        im = Image.open(SRC / f'{src}.png').convert('RGBA').crop(box)
         save_webp(im.resize((FACE_PX, FACE_PX), Image.LANCZOS), OUT / f'{name}-face.webp')
     face = Image.open(SRC / 'face.png').convert('RGBA')
     for px in (192, 180):
