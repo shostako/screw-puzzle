@@ -1,0 +1,12 @@
+{
+  "appId": "io.github.shostako.screwpuzzle",
+  "appName": "ネジ外し工房",
+  "webDir": "www",
+  "backgroundColor": "#8a4a1d",
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "css",
+      "style": "DARK"
+    }
+  }
+}
