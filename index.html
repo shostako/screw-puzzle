@@ -486,7 +486,8 @@
     while (S < target && plates.length < MAX_PLATES && emptyTiers < 4) {
       const want = 2 + Math.floor(rnd() * 3);
       let placed = 0, misses = 0;
-      while (placed < want && S < target && plates.length < MAX_PLATES && misses < 14) {
+      // 目標のねじ数に達しても、階層は最低2枚まで埋める
+      while (placed < want && (S < target || placed < 2) && plates.length < MAX_PLATES && misses < 14) {
         const sh = makeShape(rnd);
         if (!sh) { misses++; continue; }
         const pts = coarse(sh);
@@ -503,14 +504,18 @@
         placed++;
         S += sh.holes.length;
       }
+      if (placed === 1 && plates.length > 1) {    // 1枚しか入らなかった階層は取り消す
+        S -= plates.pop().sh.holes.length;
+        placed = 0;
+      }
       if (placed) { tb++; emptyTiers = 0; } else emptyTiers++;
     }
-    // ねじの総数を3の倍数にそろえる(穴の多い板から1つずつ減らす)
-    while (S % 3 !== 0) {
+    // ねじの総数を、目標+2 以下の3の倍数にそろえる(穴の多い板から1つずつ減らす)
+    while (S % 3 !== 0 || S > target + 2) {
       let best = null;
       for (const p of plates) if (p.sh.holes.length > 2 && (!best || p.sh.holes.length > best.sh.holes.length)) best = p;
       if (best) { best.sh.holes.pop(); best.holesW.pop(); S--; }
-      else if (plates.length > 1) S -= plates.pop().sh.holes.length;
+      else if (S % 3 !== 0 && plates.length > 1) S -= plates.pop().sh.holes.length;
       else break;
     }
     return { plates, S };
