@@ -1887,7 +1887,8 @@
   // 起動時に読み込んでおき、場面ごとに差し替える。読めなかったときは出さない(単体で開いたページなど)
   const CHARA = {
     idle: 'idle.webp', clear: 'clear.webp', good: 'good.webp', oops: 'oops.webp', cry: 'cry.webp', idea: 'idea.webp',   // 全身
-    ideaFace: 'idea-face.webp', oopsFace: 'oops-face.webp', smileFace: 'smile-face.webp', goodFace: 'good-face.webp', cryFace: 'cry-face.webp',   // 丸い顔
+    panic: 'panic.webp', fight: 'fight.webp',
+    ideaFace: 'idea-face.webp', oopsFace: 'oops-face.webp', smileFace: 'smile-face.webp', goodFace: 'good-face.webp', fightFace: 'fight-face.webp',   // 丸い顔
   };
   const charaOk = {}, charaImg = {};
   for (const k in CHARA) {
@@ -1907,7 +1908,8 @@
 
   // ---- 盤面の脇のキャラ ----
   // 箱の列の右、設定の歯車の下に立つ。板より先(奥)に描くので、揺れた板が重なれば板の方が手前になる。
-  // 表情はふだん待機スロットの埋まり具合で決まり(4つで困り顔、5つで涙)、出来事があるとしばらく上書きする。
+  // 表情はふだん待機スロットの埋まり具合で決まり(4つで焦り顔、5つで涙)、出来事があるとしばらく上書きする。
+  // 盤面を読み込んだときは、やる気顔でひと跳ねして出てくる。
   // 動き: ふだんは小さく揺れ、ねじを外すと小さく、板が落ちたり箱が埋まったりすると大きく跳ねる。
   // 端末が「動きを減らす」設定なら、揺れも跳ねも無しで表情だけ変える
   const LIVE = { x: 357, foot: 160, h: 108 };   // 盤面の座標: 立ち位置の中心、足元の高さ、背の高さ(いちばん幅の広い絵で 314〜400)
@@ -1916,6 +1918,7 @@
   const liveCache = {};                           // 表情ごとに、今の画面の画素数へ縮めておいた絵
   function liveReset() {
     Object.assign(live, { say: null, sayT: 0, end: null, hopT: HOP, hops: 0 });
+    liveSay('fight', 1.6);
     liveHop(10);
   }
   function liveSay(face, sec) { live.say = face; live.sayT = sec; }
@@ -1927,7 +1930,7 @@
     if (live.end) return live.end;
     if (live.sayT > 0) return live.say;
     const n = buffer.filter(Boolean).length;
-    return n >= BUF ? 'cry' : n >= BUF - 1 ? 'oops' : 'idle';
+    return n >= BUF ? 'cry' : n >= BUF - 1 ? 'panic' : 'idle';
   }
   function updateLive(dt) {
     live.t += dt; live.popT += dt; live.hopT += dt;
@@ -1959,10 +1962,11 @@
     if (!c) return;
     let y = 0, rot = 0, sx = 1, sy = 1;
     if (full()) {
-      const sad = face === 'cry' || face === 'oops';
+      const sad = face === 'cry' || face === 'oops' || face === 'panic';
       y = Math.sin(live.t * (sad ? 1.7 : 2.6)) * (sad ? 1.2 : 2.2);
       rot = Math.sin(live.t * (sad ? 0.9 : 1.3)) * (sad ? 0.02 : 0.045);
       if (face === 'cry') rot += Math.sin(live.t * 24) * 0.012;       // すすり泣きの震え
+      if (face === 'panic') rot += Math.sin(live.t * 34) * 0.008;     // 身をすくめて小刻みに震える
       if (live.hopT < HOP) {
         const u = live.hopT / HOP;
         y -= live.hopAmp * 4 * u * (1 - u);
@@ -2020,7 +2024,7 @@
   $('mBack').addEventListener('click', () => loadLevel(stageLv));
   // サイコロ: 難しさを選んでランダムな盤面へ
   const pickBtns = [...document.querySelectorAll('.pickbtn[data-diff]')];
-  const PICK_FACE = ['smileFace', 'goodFace', 'cryFace'];   // やさしいは笑顔、ふつうはウインク、むずかしいは涙目
+  const PICK_FACE = ['smileFace', 'goodFace', 'fightFace'];   // やさしいは笑顔、ふつうはウインク、むずかしいはやる気顔
   pickBtns.forEach(b => {
     const d = DIFFS[+b.dataset.diff];
     b.querySelector('small').textContent = `${colorsFor(d.lv)}色・${tierGoal(d.lv)}段` + (d.lv >= 5 ? '・先読みが要る' : '');
