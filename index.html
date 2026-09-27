@@ -217,6 +217,8 @@
 
   // ---- 状態 ----
   let engine, planks, screws, boxes, buffer, queue, level, ended, flashBuf;
+  let stuckT = 0;          // 詰みの状態が続いている秒数
+  const STUCK_HOLD = 0.8;
   let genStats = null;   // 直近の盤面生成で、色の割り当てを何回やり直したか(確認用)
 
   const cv = document.getElementById('cv');
@@ -910,6 +912,7 @@
     try { localStorage.setItem('screw-level', String(lv)); } catch (e) {}
     ended = false;
     flashBuf = 0;
+    stuckT = 0;
     engine = Engine.create();
     engine.gravity.y = 1.1;
     const data = genLevel(lv);
@@ -1204,11 +1207,16 @@
         Composite.remove(engine.world, p.body);
       }
     }
+    // 詰みは「落ち着いていて外せる手が無い」状態が STUCK_HOLD 秒続いたときだけ。
+    // ぶら下がった板は揺れの折り返しで一瞬止まるので、その瞬間だけで決めない
+    let stuckNow = false;
     if (!ended && idle()) {
       const onBoard = screws.some(s => s.state === 'board');
       if (!onBoard && !queue.length && boxes.every(b => !b)) finish(true);
-      else if (onBoard && settled() && !canMove()) finish(false);
+      else stuckNow = onBoard && settled() && !canMove();
     }
+    stuckT = stuckNow ? stuckT + dt : 0;
+    if (stuckT >= STUCK_HOLD) finish(false);
   }
 
   // ---- 描画 ----
