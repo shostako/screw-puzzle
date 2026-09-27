@@ -998,6 +998,7 @@
   }
 
   function build(lv, seed) {
+    clearTimeout(finishTimer);
     level = lv;
     ended = false;
     flashBuf = 0;
@@ -1272,9 +1273,12 @@
     if (buffer.includes(null)) return true;
     return screws.some(s => s.state === 'board' && known(s.plank) && !isBlocked(s) && openBoxFor(s.color));
   }
+  // 勝ち負けの画面は少し遅れて出す。その間に別の盤面を読み込んだら取り消す(build で clearTimeout)
+  let finishTimer = null;
   function finish(won) {
     ended = true;
-    setTimeout(() => {
+    clearTimeout(finishTimer);
+    finishTimer = setTimeout(() => {
       const rand = cur.mode === 'random';
       document.getElementById('mTitle').textContent = won ? 'クリア' : '詰み';
       document.getElementById('mSub').textContent = won
