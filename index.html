@@ -246,6 +246,9 @@
   const MAX_PLATES = 36;  // 1ステージの板の上限
   const MAX_HOLES = 4;    // 1枚の板のねじ穴の上限(ねじの総数を抑えつつ階層を増やす)
   const SCREW_CAP = 75;   // 1ステージのねじの上限
+  const PLATE_SCALE = [1.3, 1.55];   // 板の形の拡大率(下の SHAPES の寸法に掛ける)。市販アプリのように盤面に対して大きな板にする
+  const MAX_OVER = 0.9;   // 下の階層の板と重なる割合の上限(大きな板は下とよく重なる)
+  const SNUG = 18;        // 同じ階層の2枚目以降は、先に置いた板とのすき間がこれ以下になる位置を優先する
   const colorsFor = lv => Math.min(5 + Math.floor((lv - 1) / 3), 9);   // ねじの色数: ステージ1〜3で5色、3ステージごとに+1、13以降9色(用意は10色)
   const tierGoal = lv => Math.min(7 + Math.floor((lv - 1) / 3), 9);    // 階層の目標段数(ステージ1〜3で7段、4〜6で8段、7以降9段。ねじ60本前後で盤面が埋まるので10段以上は入りにくい)
   const DENSITY = 0.001, INERTIA_SCALE = 4;              // Matter.js の既定値(密度、慣性モーメントの倍率)に合わせる
@@ -457,10 +460,19 @@
     } },
   ];
 
+  // 形を相似に拡大する(太さも穴の間隔も同じ倍率)
+  function scaleShape(sh, s) {
+    const f0 = sh.f;
+    sh.f = (x, y) => s * f0(x / s, y / s);
+    sh.holes = sh.holes.map(([x, y]) => [x * s, y * s]);
+    sh.box = sh.box.map(v => v * s);
+  }
+
   function makeShape(rnd) {
     let t = rnd() * SHAPES.reduce((s, k) => s + k.w, 0), kind = SHAPES[0];
     for (const k of SHAPES) { if ((t -= k.w) < 0) { kind = k; break; } }
     const sh = kind.make(rnd);
+    scaleShape(sh, U(rnd, PLATE_SCALE[0], PLATE_SCALE[1]));
     // ねじ穴は板の縁から EDGE 以上内側、互いに GAP 以上離す
     const holes = [];
     for (const h of sh.holes) {
@@ -512,36 +524,123 @@
     for (let y = y0; y <= y1; y += 7) for (let x = x0; x <= x1; x += 7) if (sh.f(x, y) < 0) pts.push([x, y]);
     return pts;
   }
-  function fits(pl, pts, plates, maxCover, rnd) {
-    const wp = pts.map(p => place(pl, p[0], p[1]));
-    if (wp.some(([x, y]) => x < BOARD.x0 || x > BOARD.x1 || y < BOARD.y0 || y > BOARD.y1)) return false;
-    const hw = pl.sh.holes.map(h => place(pl, h[0], h[1]));
-    for (const q of plates) for (const a of q.holesW) for (const b of hw) {
-      if (len(a[0] - b[0], a[1] - b[1]) < GAP) return false;
+  // 粗い格子点の中心、そこから一番遠い点までの距離(近い板だけ調べるのに使う)、
+  // 各行の両端の点(凸包の頂点はこの中にあるので、回したときの外接矩形はこれだけで出せる)
+  function spanOf(pts) {
+    let cx = 0, cy = 0;
+    for (const [x, y] of pts) { cx += x; cy += y; }
+    cx /= pts.length; cy /= pts.length;
+    let r = 0;
+    const rim = [];
+    pts.forEach((p, i) => {                     // coarse は行ごとに左から並べている
+      r = Math.max(r, len(p[0] - cx, p[1] - cy));
+      if (!i || pts[i - 1][1] !== p[1] || i === pts.length - 1 || pts[i + 1][1] !== p[1]) rim.push(p);
+    });
+    return { cx, cy, r: r + 5, rim };
+  }
+  // 角度 ang で回したときの、形の原点から見た外接矩形
+  function extent(rim, ang) {
+    const c = Math.cos(ang), s = Math.sin(ang);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [x, y] of rim) {
+      const X = x * c - y * s, Y = x * s + y * c;
+      x0 = Math.min(x0, X); x1 = Math.max(x1, X); y0 = Math.min(y0, Y); y1 = Math.max(y1, Y);
     }
-    // 同じ階層の板とは重ねず、すき間も空ける(あとで衝突させる)
-    const inside = (q, x, y) => { const l = unplace(q, x, y); return q.sh.f(l[0], l[1]) < TIER_GAP; };
-    for (const q of plates) {
-      if (q.tb !== pl.tb) continue;
-      if (wp.some(([x, y]) => inside(q, x, y)) || q.wp.some(([x, y]) => inside(pl, x, y))) return false;
+    return [x0, y0, x1, y1];
+  }
+  const near = (a, b, m) => len(a.cx - b.cx, a.cy - b.cy) < a.r + b.r + m;
+  // 置いた板の範囲を盤面の格子に焼いておく。occ: セルを覆っている一番下の階層(重なり具合を数える)。
+  // near: 板からすき間 TIER_GAP(＋格子の目の分)以内にあるセルの、一番上の階層(同じ階層の板と近すぎないかを見る。階層は下から置くので、
+  // 今置いている階層の値がそのまま残る)
+  const CELL = 4, GW = Math.ceil((BOARD.x1 - BOARD.x0) / CELL) + 1, GH = Math.ceil((BOARD.y1 - BOARD.y0) / CELL) + 1;
+  const NEAR = TIER_GAP + 6;
+  const cellOf = (x, y) => Math.round((y - BOARD.y0) / CELL) * GW + Math.round((x - BOARD.x0) / CELL);
+  function stamp(g, pl) {
+    const R = pl.r + NEAR;
+    const i0 = Math.max(0, Math.floor((pl.cx - R - BOARD.x0) / CELL)), i1 = Math.min(GW - 1, Math.ceil((pl.cx + R - BOARD.x0) / CELL));
+    const j0 = Math.max(0, Math.floor((pl.cy - R - BOARD.y0) / CELL)), j1 = Math.min(GH - 1, Math.ceil((pl.cy + R - BOARD.y0) / CELL));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const l = unplace(pl, BOARD.x0 + i * CELL, BOARD.y0 + j * CELL), d = pl.sh.f(l[0], l[1]), c = j * GW + i;
+      if (d < NEAR) {
+        if (g.near[c] < pl.tb || g.near[c] === 255) g.near[c] = pl.tb;
+        if (d < 0 && g.occ[c] > pl.tb) g.occ[c] = pl.tb;
+      }
     }
-    const lower = plates.filter(q => q.tb < pl.tb);
-    if (!lower.length) return true;          // 一番下の階層には重ねる相手がいない
-    // 下の階層の板とほどよく重ねる(離れ小島にも、べったり覆うのにもしない)
+  }
+  const newGrid = () => ({ occ: new Uint8Array(GW * GH).fill(255), near: new Uint8Array(GW * GH).fill(255) });
+  function fits(pl, pts, plates, grid, maxCover, rnd) {
+    // 盤面に収まること、同じ階層の板とは重ねずすき間も空けること(あとで衝突させる)、下の階層の板と重なる点の数
+    const c = Math.cos(pl.ang), s = Math.sin(pl.ang);
     let over = 0;
-    for (const [x, y] of wp) {
-      if (lower.some(q => { const l = unplace(q, x, y); return q.sh.f(l[0], l[1]) < 0; })) over++;
+    for (const [px, py] of pts) {
+      const x = pl.x + px * c - py * s, y = pl.y + px * s + py * c;
+      if (x < BOARD.x0 || x > BOARD.x1 || y < BOARD.y0 || y > BOARD.y1) return false;
+      const k = cellOf(x, y);
+      if (grid.near[k] === pl.tb) return false;
+      if (grid.occ[k] < pl.tb) over++;
     }
-    const frac = over / wp.length;
-    if (frac < 0.15 || frac > 0.8) return false;
-    let cov = 0;
-    for (const q of lower) for (const a of q.holesW) {
-      const l = unplace(pl, a[0], a[1]);
-      if (covers(pl.sh.f, l[0], l[1])) cov++;
+    if (plates.some(q => q.tb < pl.tb)) {      // 一番下の階層には重ねる相手がいない
+      const lower = plates.filter(q => q.tb < pl.tb && near(pl, q, SR + 3));
+      if (!lower.length) return false;         // 離れ小島
+      // 下の階層の板とほどよく重ねる(離れ小島にも、べったり覆うのにもしない)
+      const frac = over / pts.length;
+      if (frac < 0.15 || frac > MAX_OVER) return false;
+      let cov = 0;
+      for (const q of lower) for (const a of q.holesW) {
+        if (len(a[0] - pl.cx, a[1] - pl.cy) > pl.r + SR + 2) continue;
+        const l = unplace(pl, a[0], a[1]);
+        if (covers(pl.sh.f, l[0], l[1])) cov++;
+      }
+      if (cov > maxCover) return false;
+      if (cov === 0 && lower.length >= 2 && rnd() < 0.7) return false;
     }
-    if (cov > maxCover) return false;
-    if (cov === 0 && lower.length >= 2 && rnd() < 0.7) return false;
-    return true;
+    pl.hs = chooseHoles(pl, plates);
+    return !!pl.hs;
+  }
+
+  // ねじ穴の候補点: 板の縁から EDGE 以上内側の格子点(形の座標)
+  function holeSites(sh) {
+    const out = [], [x0, y0, x1, y1] = sh.box;
+    for (let y = y0; y <= y1; y += 8) for (let x = x0; x <= x1; x += 8) if (sh.f(x, y) <= -EDGE) out.push([x, y]);
+    return out;
+  }
+  // ねじ穴は置く位置を決めてから選ぶ。候補点のうち、盤面のほかのねじ穴から GAP 以上離れた点を、互いにできるだけ離して
+  // 形が決めた数(sh.nh)まで。1つ目は形の中心から一番遠い点、以降は選んだ穴から一番遠い点(端から埋まっていく)。
+  // 穴の位置を形に固定すると、大きな板は混んだ盤面のほぼどこに置いても既存のねじ穴とぶつかる
+  function chooseHoles(pl, plates) {
+    const sh = pl.sh, others = [];
+    for (const q of plates) for (const a of q.holesW) if (len(a[0] - pl.cx, a[1] - pl.cy) < pl.r + GAP) others.push(a[0], a[1]);
+    const free = [], c = Math.cos(pl.ang), sn = Math.sin(pl.ang);
+    for (const s of sh.sites) {
+      const x = pl.x + s[0] * c - s[1] * sn, y = pl.y + s[0] * sn + s[1] * c;
+      let ok = true;
+      for (let k = 0; k < others.length && ok; k += 2) ok = (others[k] - x) ** 2 + (others[k + 1] - y) ** 2 >= GAP * GAP;
+      if (ok) free.push(s);
+    }
+    const out = [];
+    let dist = free.map(s => len(s[0] - sh.c[0], s[1] - sh.c[1]));
+    while (out.length < sh.nh) {
+      let k = -1;
+      for (let i = 0; i < free.length; i++) if (k < 0 || dist[i] > dist[k]) k = i;
+      if (k < 0 || (out.length && dist[k] < GAP)) break;
+      const h = free[k];
+      out.push(h);
+      dist = dist.map((d, i) => out.length === 1 ? len(free[i][0] - h[0], free[i][1] - h[1]) : Math.min(d, len(free[i][0] - h[0], free[i][1] - h[1])));
+    }
+    return out.length >= 2 ? out : null;
+  }
+
+  // 同じ階層の板とのすき間(粗い格子点での概算。格子の目の分だけ実際より大きめに出る)
+  function gapTo(pl, pts, mates) {
+    let g = Infinity;
+    for (const q of mates) {
+      if (!near(pl, q, SNUG * 2)) continue;
+      for (const [px, py] of pts) {
+        const [x, y] = place(pl, px, py), l = unplace(q, x, y);
+        g = Math.min(g, q.sh.f(l[0], l[1]));
+      }
+    }
+    return g;
   }
 
   // 板を下の階層から置いていき、ねじの総数を3の倍数にそろえる。tb は下から数えた階層。
@@ -550,31 +649,57 @@
     const maxCover = Math.min(3 + Math.floor(lv / 3), 6);
     const goal = tierGoal(lv);
     const plates = [];
+    let grid = newGrid();
     let S = 0, tb = 0, emptyTiers = 0;
-    while (tb < goal && S < SCREW_CAP && plates.length < MAX_PLATES && emptyTiers < 6) {
+    while (tb < goal && S < SCREW_CAP && plates.length < MAX_PLATES && emptyTiers < 3) {
       const want = 2 + (lv >= 4 && rnd() < 0.5 ? 1 : 0);
       let placed = 0, misses = 0;
       // ねじの上限に達しても、階層は最低2枚まで埋める
       while (placed < want && (S < SCREW_CAP || placed < 2) && plates.length < MAX_PLATES && misses < 14) {
         const sh = makeShape(rnd);
         if (!sh) { misses++; continue; }
-        const pts = coarse(sh);
-        let ok = null;
-        for (let k = 0; k < 24 && !ok; k++) {
-          const spread = !plates.length ? 0.3 : tb === 0 ? 0.7 : 1;
-          const pl = { sh, tb, ang: rnd() * TAU, x: 200 + (rnd() * 2 - 1) * 130 * spread, y: 437 + (rnd() * 2 - 1) * 190 * spread };
-          if (fits(pl, pts, plates, maxCover, rnd)) ok = pl;
+        const pts = coarse(sh), sp = spanOf(pts);
+        sh.sites = holeSites(sh); sh.nh = sh.holes.length; sh.c = [sp.cx, sp.cy];
+        const mates = plates.filter(q => q.tb === tb);
+        // 同じ階層に先客がいれば、そのすぐ隣を狙って置く(回ったり落ちたりした板が隣の板に当たって止まるように)。
+        // 置ける位置のうち、先客とのすき間が一番小さいものを選ぶ
+        let ok = null, best = Infinity, found = 0;
+        for (let k = 0; k < 40 && found < 4; k++) {
+          const ang = rnd() * TAU, c = rot(sp.cx, sp.cy, ang), e = extent(sp.rim, ang);
+          // 盤面からはみ出さない原点の範囲
+          const xlo = BOARD.x0 - e[0] + 0.5, xhi = BOARD.x1 - e[2] - 0.5, ylo = BOARD.y0 - e[1] + 0.5, yhi = BOARD.y1 - e[3] - 0.5;
+          if (xlo > xhi || ylo > yhi) continue;
+          let cx, cy;
+          if (mates.length && k % 3 !== 2) {
+            const m = mates[Math.floor(rnd() * mates.length)], a = rnd() * TAU, d = (m.r + sp.r) * U(rnd, 0.5, 0.95);
+            cx = m.cx + Math.cos(a) * d; cy = m.cy + Math.sin(a) * d;
+          } else {
+            const spread = !plates.length ? 0.3 : tb === 0 ? 0.7 : 1;
+            cx = 200 + (rnd() * 2 - 1) * 130 * spread; cy = 437 + (rnd() * 2 - 1) * 190 * spread;
+          }
+          const x = Math.min(xhi, Math.max(xlo, cx - c.x)), y = Math.min(yhi, Math.max(ylo, cy - c.y));
+          const pl = { sh, tb, ang, x, y, cx: x + c.x, cy: y + c.y, r: sp.r };
+          if (!fits(pl, pts, plates, grid, maxCover, rnd)) continue;
+          found++;
+          const g = mates.length ? gapTo(pl, pts, mates) : 0;
+          if (g < best) { best = g; ok = pl; }
+          if (g <= SNUG) break;
         }
         if (!ok) { misses++; continue; }
+        sh.holes = ok.hs;
         ok.holesW = sh.holes.map(h => place(ok, h[0], h[1]));
         ok.wp = pts.map(p => place(ok, p[0], p[1]));
+        ok.pts = pts;
         plates.push(ok);
+        stamp(grid, ok);
         placed++;
         S += sh.holes.length;
       }
       if (placed === 1) {                        // 1枚しか入らなかった階層は取り消す(一番下の階層も)
         S -= plates.pop().sh.holes.length;
         placed = 0;
+        grid = newGrid();
+        plates.forEach(q => stamp(grid, q));
       }
       if (placed) { tb++; emptyTiers = 0; } else emptyTiers++;
     }
@@ -616,15 +741,15 @@
     shuffle(boxQueue, rnd);
     const list = [];
     plates.forEach((p, li) => p.sh.holes.forEach((h, hi) => list.push({ pl: li, hi, tier: p.tier, x: p.holesW[hi][0], y: p.holesW[hi][1] })));
-    const cov = buildModel(plates, list);
+    const model = buildModel(plates, list);
     const hard = lv >= 5 ? 2 : lv >= 2 ? 1 : 0;   // 0: 解ければよい 1: 上から順に外すだけでは解けない 2: さらに手なりでも解けない
     const win = Math.min(5 + lv, 14), noise = Math.min(1.5 + lv * 0.1, 3);
     let choice = null, spare = null, tries = 0;
     for (; tries < TRY_ASSIGN && !choice; tries++) {
       assignColors(list, boxQueue, win, noise, rnd);
-      const easy = (hard >= 1 && solvable(list, boxQueue)) || (hard >= 2 && greedyPlay(plates, list, boxQueue, cov));
+      const easy = (hard >= 1 && solvable(list, boxQueue)) || (hard >= 2 && greedyPlay(plates, list, boxQueue, model));
       if (easy && spare) continue;               // 易しい割り当ての控えは1つで足りる
-      const path = solveFull(plates, list, boxQueue, cov, SOLVE_BUDGET);
+      const path = solveFull(plates, list, boxQueue, model, SOLVE_BUDGET);
       if (!path) continue;
       const rec = { colors: list.map(x => x.color), path, easy };
       if (easy) spare = rec; else choice = rec;
@@ -677,7 +802,9 @@
       while (rem.length) {
         let i = rem.findIndex(k => boxes.some(b => b.color === list[k].color));
         if (i >= 0) {
-          const k = rem.splice(i, 1)[0], b = boxes.find(x => x.color === list[k].color);
+          const k = rem.splice(i, 1)[0];
+          let b = null;                           // 同じ色の箱が2つなら多く入っている方(ゲームの openBoxFor と同じ)
+          for (const x of boxes) if (x.color === list[k].color && (!b || x.n > b.n)) b = x;
           order.push(k);
           if (++b.n === 3) { boxes.splice(boxes.indexOf(b), 1); spawn(); }
           continue;
@@ -695,54 +822,254 @@
   const solvable = (list, queue) => solveOrder(list, queue) !== null;
 
   // ---- 解けるかの判定(見えていて外せるねじ全部が手の候補) ----
-  // 板の動きは安全側に見積もる。この見積もりで外せる手順は、実際のゲームでも必ず外せる
+  // 板の動きは安全側に見積もる。前提は「揺れや落下が落ち着いてから次のねじを外す」。この見積もりで外せる手順は、実際のゲームでも外せる
   //  ・ねじ2本以上の板は動かないので、置いた位置の形で隠す(判定の輪はゲームより 2 大きい)
-  //  ・1本留めの板は揺れ方や衝突で向きが変わるので、残ったねじを中心に板が届く円の中はすべて隠すとみなす
-  //  ・ねじ0本の板は何にも当たらずに落ちるので、落ちきれば何も隠さない(落ちきるのを待つ前提)
+  //  ・1本留めの板は、重心が真下へ向かう向きに回る。同じ階層でねじ2本以上の板(動かない)に当たればそこで止まり、
+  //    当たらなければ真下に垂れて止まる。その止まった姿勢(前後に1刻みの余裕)で隠す。
+  //    同じ階層にぶら下がっている板や引っかかった板があって互いに押し合いうるとき、重心が支点のほぼ真上のとき
+  //    (倒れる向きが決まらない)は、残ったねじを中心に板が届く円の中をすべて隠すとみなす
+  //  ・ねじ0本の板は、止まっていた姿勢からまっすぐ下へ落ちる。その途中に、同じ階層でねじの残った板(2本以上なら置いた形、
+  //    1本なら届く円)があれば引っかかったとする。無ければ落ちきって何も隠さない(ねじ0本どうしはぶつからない)。
+  //    引っかかった板は、落ち始めた高さより下のねじを盤面の幅いっぱい隠す。乗った先から滑り落ちてまた別の板に乗ることもあるので、
+  //    たどりうる板(catchers)のねじが全部外れるまで引っかかったままとみなす
   const TRY_ASSIGN = 30;      // 色の割り当てを試す回数
   const SOLVE_BUDGET = 6000;  // 手順探索の打ち切り(調べる局面の数)
+  const FALL_SLIDE = 30;      // 姿勢が決まらない板が落ちるときの横へのずれの余裕
+  const SWING_STEP = 10;      // 回る板の姿勢を調べる刻み(板の一番遠い点が動く距離)
   const RING_SAFE = [[0, 0]];
   for (let k = 0; k < 16; k++) RING_SAFE.push([Math.cos(k * TAU / 16) * (SR + 3), Math.sin(k * TAU / 16) * (SR + 3)]);
 
-  // cov[i] = ねじ i を隠しうる上の階層の板: { q, stat: 動かないときに隠すか, disc: 1本留めで隠す支点(穴番号のビット) }
+  // 形の格子点のうち縁にあるもの(上下左右のどれかが欠けている点)
+  function rimPts(pts) {
+    const key = (x, y) => Math.round(x * 2) + ',' + Math.round(y * 2), has = new Set(pts.map(([x, y]) => key(x, y)));
+    return pts.filter(([x, y]) => !has.has(key(x - 7, y)) || !has.has(key(x + 7, y)) || !has.has(key(x, y - 7)) || !has.has(key(x, y + 7)));
+  }
+
+  // cov[i] = ねじ i を隠しうる上の階層の板: { q, stat: 動かないときに隠すか, disc: 1本留めで円として隠す支点(穴のビット),
+  //          pose: 1本留めで止まった姿勢で隠すか(ビット h*4+j: 穴 h、止まる姿勢 j) }
+  // rest[q][h] = 板 q が穴 h 1本でぶら下がったときの止まり方: { disc: true } か
+  //          { mates: [{ m, j: 当たったときの姿勢(-1 = 当たらない), disc: m の円と届きあう穴のビット }], free: 真下に垂れた姿勢,
+  //            poses: [{ top, stat: 落ちる途中で当たる板, discs: [{ m, bits }] }] }
+  // drop[q][h] = 姿勢が決まらない板 q が穴 h を最後に外して落ちるとき、落ちる先にかかる同じ階層の板: { r, stat, disc }
+  // catchers[q] = 板 q が引っかかったあと、乗り移りうる同じ階層の板。大きな板では実際には同じ階層の板全部になる
+  //          (ステージ1〜40の822枚すべて)。ねじ0本どうしはぶつからないので、同じ階層のねじが全部外れれば乗る相手は残らない
   function buildModel(plates, list) {
     const cov = list.map(() => []);
-    plates.forEach((pl, q) => {
-      const reach = pl.holesW.map(([hx, hy]) => {
-        let m = 0;
-        for (const [x, y] of pl.wp) m = Math.max(m, len(x - hx, y - hy));
-        return m + 12;                            // 粗い格子の目の分と縁取りと、支点のわずかな伸びの分
+    const reach = plates.map(pl => pl.holesW.map(([hx, hy]) => {
+      let m = 0;
+      for (const [x, y] of pl.wp) m = Math.max(m, len(x - hx, y - hy));
+      return m + 12;                              // 粗い格子の目の分と縁取りと、支点のわずかな伸びの分
+    }));
+    const rims = plates.map(pl => rimPts(pl.pts));
+    // 重心(形の座標)。ゲームの剛体と同じく、ねじ穴の分を抜く
+    const com = plates.map(pl => {
+      let x = 0, y = 0, n = 0;
+      for (const [px, py] of pl.pts) {
+        if (pl.sh.holes.some(h => len(px - h[0], py - h[1]) < HR)) continue;
+        x += px; y += py; n++;
+      }
+      return [x / n, y / n];
+    });
+    // 板が届きうる範囲の横幅と一番上(どの穴でぶら下がっても)
+    const fall = plates.map((pl, q) => {
+      let xl = Infinity, xr = -Infinity, top = Infinity;
+      pl.holesW.forEach(([hx, hy], h) => {
+        xl = Math.min(xl, hx - reach[q][h]); xr = Math.max(xr, hx + reach[q][h]); top = Math.min(top, hy - reach[q][h]);
       });
+      return { xl, xr, top };
+    });
+    const mates = plates.map((pl, q) => { const o = []; plates.forEach((r, k) => { if (k !== q && r.tier === pl.tier) o.push(k); }); return o; });
+    // 円 (cx, cy, R) が帯 { xl ≤ x ≤ xr, y ≥ top } にかかるか
+    const discInBand = (cx, cy, R, b) => len(cx - Math.min(b.xr, Math.max(b.xl, cx)), cy - Math.max(b.top, cy)) < R;
+    // 板 r が届きうる範囲(置いた形と、穴ごとの届く円)が帯にかかるか
+    const hits = (r, b) => plates[r].wp.some(([x, y]) => x >= b.xl && x <= b.xr && y >= b.top) ||
+      plates[r].holesW.some(([hx, hy], h) => discInBand(hx, hy, reach[r][h], b));
+    // 姿勢が決まらない板が最後の穴 h で落ちる先の帯
+    const col = (q, h) => {
+      const [hx, hy] = plates[q].holesW[h], R = reach[q][h];
+      return { xl: hx - R - FALL_SLIDE, xr: hx + R + FALL_SLIDE, top: hy - R };
+    };
+    const drop = plates.map((pl, q) => pl.holesW.map((_, h) => {
+      const b = col(q, h), out = [];
+      for (const k of mates[q]) {
+        const r = plates[k];
+        const stat = r.wp.some(([x, y]) => x >= b.xl && x <= b.xr && y >= b.top);
+        let disc = 0;
+        r.holesW.forEach(([hx, hy], hr) => { if (discInBand(hx, hy, reach[k][hr], b)) disc |= 1 << hr; });
+        if (stat || disc) out.push({ r: k, stat, disc });
+      }
+      return out;
+    }));
+    const catchers = plates.map((pl, q) => {
+      const out = [], w = 2 * pl.r;
+      const todo = [{ xl: fall[q].xl - FALL_SLIDE, xr: fall[q].xr + FALL_SLIDE, top: fall[q].top }];
+      while (todo.length) {
+        const b = todo.pop();
+        for (const r of mates[q]) {
+          if (out.includes(r) || !hits(r, b)) continue;
+          out.push(r);
+          todo.push({ xl: fall[r].xl - w, xr: fall[r].xr + w, top: fall[r].top - w });
+        }
+      }
+      return out;
+    });
+
+    // 同じ階層の板の置き場所を格子に焼く(セル = 板の番号)。回る板が隣の板に当たる角度を探すのに使う
+    const grids = new Map();
+    const gridOf = t => {
+      if (grids.has(t)) return grids.get(t);
+      const g = new Int16Array(GW * GH).fill(-1);
+      plates.forEach((pl, k) => {
+        if (pl.tier !== t) return;
+        for (const [x, y] of pl.wp) {
+          const i0 = Math.round((x - BOARD.x0) / CELL), j0 = Math.round((y - BOARD.y0) / CELL);
+          for (let j = j0 - 1; j <= j0 + 1; j++) for (let i = i0 - 1; i <= i0 + 1; i++) if (i >= 0 && i < GW && j >= 0 && j < GH) g[j * GW + i] = k;
+        }
+      });
+      grids.set(t, g);
+      return g;
+    };
+    // 板 q を穴 h のまわりに角度 a まで回したときの点 p(形の座標)の位置
+    const posed = (pl, h, a, [px, py]) => {
+      const H = pl.sh.holes[h], P = pl.holesW[h], c = Math.cos(a), s = Math.sin(a), x = px - H[0], y = py - H[1];
+      return [P[0] + x * c - y * s, P[1] + x * s + y * c];
+    };
+    const rest = plates.map((pl, q) => pl.holesW.map((P, h) => {
+      const H = pl.sh.holes[h], v = rot(com[q][0] - H[0], com[q][1] - H[1], pl.ang), d = len(v.x, v.y);
+      let D = Math.PI / 2 - Math.atan2(v.y, v.x);   // 重心が真下に来るまでに回る角度(短い向き)
+      D = Math.atan2(Math.sin(D), Math.cos(D));
+      // 重心が支点に近すぎる、または支点のほぼ真上(倒れる向きが格子の誤差で入れ替わりうる)なら姿勢を決めない
+      if (d < 6 || Math.abs(v.x) < 6 && v.y < 0) return { disc: true };
+      const K = Math.max(2, Math.ceil(Math.abs(D) * reach[q][h] / SWING_STEP));
+      const ang = k => pl.ang + D * Math.max(0, Math.min(K, k)) / K;
+      // 回っていく途中で、同じ階層の板に最初に当たる刻み
+      const g = gridOf(pl.tier), hit = new Map();
+      const reachable = mates[q].filter(m => len(P[0] - plates[m].cx, P[1] - plates[m].cy) < reach[q][h] + plates[m].r);
+      for (let k = 1; k <= K && hit.size < reachable.length; k++) {
+        for (const p of rims[q]) {
+          const [x, y] = posed(pl, h, ang(k), p);
+          if (x < BOARD.x0 || x > BOARD.x1 || y < BOARD.y0 || y > BOARD.y1) continue;
+          const m = g[cellOf(x, y)];
+          if (m >= 0 && m !== q && !hit.has(m)) hit.set(m, k);
+        }
+      }
+      const ks = [...new Set([...hit.values(), K])].sort((a, b) => a - b);
+      if (ks.length > 4) return { disc: true };  // 姿勢の番号は穴ごとに4つまで(cov の pose ビット)
+      // 止まる姿勢 j: 刻み k の前後(当たったなら k-2 〜 k+1、垂れたなら K-1 〜 K)の角度
+      const spans = ks.map(k => k === K && ![...hit.values()].includes(K) ? [K - 1, K] : [k - 2, k - 1, k, k + 1]);
+      const poses = spans.map(span => {
+        let top = Infinity;
+        const low = new Map();                    // 8 ごとの縦の列ごとの一番下
+        for (const k of span) {
+          for (const p of rims[q]) top = Math.min(top, posed(pl, h, ang(k), p)[1]);
+          for (const p of pl.pts) {
+            const [x, y] = posed(pl, h, ang(k), p), b = Math.round(x / 8);
+            for (const bb of [b - 1, b, b + 1]) low.set(bb, Math.max(low.get(bb) ?? -Infinity, y));
+          }
+        }
+        let xl = Infinity, xr = -Infinity;
+        for (const b of low.keys()) { xl = Math.min(xl, b * 8); xr = Math.max(xr, b * 8); }
+        const stat = [], discs = [];
+        for (const m of mates[q]) {
+          if (plates[m].wp.some(([x, y]) => y > (low.get(Math.round(x / 8)) ?? Infinity))) stat.push(m);
+          let bits = 0;
+          plates[m].holesW.forEach(([hx, hy], hm) => { if (discInBand(hx, hy, reach[m][hm], { xl: xl - 8, xr: xr + 8, top })) bits |= 1 << hm; });
+          if (bits) discs.push({ m, bits });
+        }
+        return { top, stat, discs, span };
+      });
+      const ms = mates[q].map(m => {
+        let disc = 0;
+        plates[m].holesW.forEach(([hx, hy], hm) => { if (len(hx - P[0], hy - P[1]) < reach[q][h] + reach[m][hm]) disc |= 1 << hm; });
+        return { m, j: hit.has(m) ? ks.indexOf(hit.get(m)) : -1, disc };
+      });
+      return { mates: ms, free: ks.length - 1, poses, ang };
+    }));
+
+    plates.forEach((pl, q) => {
       list.forEach((s, i) => {
         if (s.tier <= pl.tier) return;
         const l = unplace(pl, s.x, s.y);
         const stat = RING_SAFE.some(([ox, oy]) => pl.sh.f(l[0] + ox, l[1] + oy) < 0);
-        let disc = 0;
-        pl.holesW.forEach(([hx, hy], hi) => { if (len(s.x - hx, s.y - hy) < reach[hi] + SR + 3) disc |= 1 << hi; });
-        if (stat || disc) cov[i].push({ q, stat, disc });
+        let disc = 0, pose = 0;
+        pl.holesW.forEach(([hx, hy], h) => {
+          if (len(s.x - hx, s.y - hy) >= reach[q][h] + SR + 3) return;
+          disc |= 1 << h;
+          const rt = rest[q][h];
+          if (rt.disc) return;
+          // 姿勢の刻みの間で点が動くのは SWING_STEP 以内なので、その半分を余裕に足す
+          const H = pl.sh.holes[h];
+          rt.poses.forEach((p, j) => {
+            if (p.span.some(k => {
+              const a = rt.ang(k), c = Math.cos(a), sn = Math.sin(a), dx = s.x - hx, dy = s.y - hy;
+              return pl.sh.f(H[0] + dx * c + dy * sn, H[1] - dx * sn + dy * c) < SR + 4 + SWING_STEP / 2;
+            })) pose |= 1 << (h * 4 + j);
+          });
+        });
+        if (stat || disc) cov[i].push({ q, stat, disc, pose });
       });
     });
-    return cov;
+    return { cov, drop, catchers, rest, col };
   }
 
   // 盤面の数え上げ用の模擬(物理なし)。apply で1本外し、save/restore で戻す
-  function makeSim(plates, list, queue, cov) {
+  function makeSim(plates, list, queue, model) {
+    const { cov, drop, catchers, rest, col } = model;
     const N = list.length;
     const T = list.reduce((m, s) => Math.max(m, s.tier), 0) + 1;
     const st = {
       left: plates.map(pl => (1 << pl.sh.holes.length) - 1),   // 板ごとに残っている穴(ビット)
       removed: new Uint8Array(N), tierLeft: new Int32Array(T),
+      hungTop: new Float64Array(plates.length).fill(Infinity),   // ねじ0本で引っかかった板の、落ち始めた高さ(Infinity = 引っかかっていない)
+      nHung: 0,
+      wild: new Uint8Array(plates.length),   // ぶら下がっている間に、ほかの動く板と押し合いうる状態になった板(以後は姿勢を決めない)
       boxes: [], qi: 0, buf: new Array(COLORS.length).fill(0), bufN: 0, done: 0,
     };
     list.forEach(s => { st.tierLeft[s.tier]++; });
     const bits = m => (m & 1) + (m >> 1 & 1) + (m >> 2 & 1) + (m >> 3 & 1) + (m >> 4 & 1);
     const topTier = () => { for (let t = 0; t < T; t++) if (st.tierLeft[t]) return t; return T; };
+    // 引っかかった板は、乗り移りうる板にねじが残っている間は引っかかったまま
+    const caught = q => st.hungTop[q] < Infinity && catchers[q].some(r => st.left[r]);
+    // 穴 h 1本でぶら下がった板 q が止まる姿勢(-1 = 決まらないので円で隠す)
+    const restOf = (q, h) => {
+      const rt = rest[q][h];
+      if (rt.disc || st.wild[q]) return -1;
+      let j = rt.free;
+      for (const e of rt.mates) {
+        const m = st.left[e.m], n = bits(m);
+        if (n >= 2) { if (e.j >= 0 && e.j < j) j = e.j; }
+        else if (n === 1) { if (e.disc & m) return -1; }
+        else if (caught(e.m)) return -1;
+      }
+      return j;
+    };
     const blocked = i => {
       for (const c of cov[i]) {
         const m = st.left[c.q], n = bits(m);
-        if (n >= 2 ? c.stat : n === 1 && (c.disc & m)) return true;
+        if (n >= 2) { if (c.stat) return true; }
+        else if (n === 1) {
+          const h = 31 - Math.clz32(m), j = restOf(c.q, h);
+          if (j < 0 ? c.disc >> h & 1 : c.pose >> (h * 4 + j) & 1) return true;
+        }
+      }
+      if (st.nHung) {
+        const s = list[i];
+        for (let q = 0; q < plates.length; q++) {
+          if (st.hungTop[q] < Infinity && plates[q].tier < s.tier && s.y + SR + 3 >= st.hungTop[q] && caught(q)) return true;
+        }
       }
       return false;
+    };
+    // 板 q が穴 h の最後のねじを外されて落ちるとき、引っかかるなら落ち始めた高さ(引っかからなければ Infinity)
+    const landTop = (q, h) => {
+      const j = restOf(q, h);
+      if (j < 0) {
+        const hit = drop[q][h].some(e => { const m = st.left[e.r], n = bits(m); return n >= 2 ? e.stat : n === 1 && (e.disc & m); });
+        return hit ? col(q, h).top : Infinity;
+      }
+      const p = rest[q][h].poses[j];
+      const hit = p.stat.some(m => bits(st.left[m]) >= 2) || p.discs.some(e => bits(st.left[e.m]) === 1 && (e.bits & st.left[e.m]));
+      return hit ? p.top : Infinity;
     };
     const avail = () => {
       const t0 = topTier(), out = [];
@@ -757,28 +1084,41 @@
         if (b.n < 3) st.boxes.push(b);
       }
     };
-    const openFor = c => st.boxes.find(b => b.c === c);
+    const openFor = c => {                        // 同じ色の箱が2つなら多く入っている方(ゲームの openBoxFor と同じ)
+      let best;
+      for (const b of st.boxes) if (b.c === c && (!best || b.n > best.n)) best = b;
+      return best;
+    };
     const apply = i => {                          // false = 合う箱が無く待機スロットも満杯
       const c = list[i].color, b = openFor(c);
       if (!b && st.bufN >= BUF) return false;
-      st.removed[i] = 1; st.left[list[i].pl] &= ~(1 << list[i].hi); st.tierLeft[list[i].tier]--; st.done++;
+      const q = list[i].pl, top = st.left[q] === 1 << list[i].hi ? landTop(q, list[i].hi) : Infinity;
+      st.removed[i] = 1; st.left[q] &= ~(1 << list[i].hi); st.tierLeft[list[i].tier]--; st.done++;
+      if (top < Infinity) { st.hungTop[q] = top; st.nHung++; }
+      // 同じ階層でぶら下がっている板のうち、この手でほかの動く板と押し合いうるようになったものは、以後の姿勢を決めない
+      for (let r = 0; r < plates.length; r++) {
+        const m = st.left[r];
+        if (!st.wild[r] && plates[r].tier === list[i].tier && m && !(m & m - 1) && restOf(r, 31 - Math.clz32(m)) < 0) st.wild[r] = 1;
+      }
       if (b) { if (++b.n === 3) { st.boxes.splice(st.boxes.indexOf(b), 1); spawn(); } }
       else { st.buf[c]++; st.bufN++; }
       return true;
     };
-    const save = () => ({ boxes: st.boxes.map(b => ({ c: b.c, n: b.n })), qi: st.qi, buf: st.buf.slice(), bufN: st.bufN });
+    const save = () => ({ boxes: st.boxes.map(b => ({ c: b.c, n: b.n })), qi: st.qi, buf: st.buf.slice(), bufN: st.bufN, wild: st.wild.slice() });
     const restore = (i, sv) => {
-      st.removed[i] = 0; st.left[list[i].pl] |= 1 << list[i].hi; st.tierLeft[list[i].tier]++; st.done--;
-      st.boxes = sv.boxes; st.qi = sv.qi; st.buf = sv.buf; st.bufN = sv.bufN;
+      const q = list[i].pl;
+      st.removed[i] = 0; st.left[q] |= 1 << list[i].hi; st.tierLeft[list[i].tier]++; st.done--;
+      if (st.hungTop[q] < Infinity) { st.hungTop[q] = Infinity; st.nHung--; }
+      st.boxes = sv.boxes; st.qi = sv.qi; st.buf = sv.buf; st.bufN = sv.bufN; st.wild = sv.wild;
     };
     const won = () => st.done === N && !st.boxes.length && st.qi === queue.length && !st.bufN;
     spawn();
-    return { st, avail, apply, save, restore, won, openFor, topTier };
+    return { st, avail, apply, save, restore, won, openFor, topTier, bits };
   }
 
   // 手なり: 合う箱があるねじを入れ、無ければ見えている中で一番多い色を待機スロットへ(箱の順番は知らない)
-  function greedyPlay(plates, list, queue, cov) {
-    const S = makeSim(plates, list, queue, cov), st = S.st;
+  function greedyPlay(plates, list, queue, model) {
+    const S = makeSim(plates, list, queue, model), st = S.st;
     while (!S.won()) {
       const A = S.avail();
       if (!A.length) return false;
@@ -796,12 +1136,31 @@
   }
 
   // 手順の探索(深さ優先、行き止まりの局面は覚えておく)。返り値: 外す順番 / false(解けない) / null(打ち切り)
-  function solveFull(plates, list, queue, cov, budget) {
-    const S = makeSim(plates, list, queue, cov), st = S.st, path = [], dead = new Set();
+  function solveFull(plates, list, queue, model, budget) {
+    const S = makeSim(plates, list, queue, model), st = S.st, path = [], dead = new Set();
     let nodes = 0;
     const need = c => { for (let k = st.qi; k < queue.length; k++) if (queue[k] === c) return k - st.qi; return 99; };
-    const key = () => st.left.join(',') + '|' + st.qi + ':' + st.boxes.map(b => b.c + '.' + b.n).join(',') + '|' + st.buf.join('');
+    const key = () => st.left.join(',') + '|' + (st.nHung ? st.hungTop.join(',') : '') + '|' + st.wild.join('') + '|' + st.qi + ':' + st.boxes.map(b => b.c + '.' + b.n).join(',') + '|' + st.buf.join('');
+    // 残り3本以上の板のねじを合う箱へ入れる手は、板が動かず隠し方も変わらないので、打って損をしない。分岐させずに先に打つ
+    // (入れ替えても同じ局面になる手順を何通りも調べずに済む)
+    function forced() {
+      const done = [];
+      for (;;) {
+        const i = S.avail().find(k => S.openFor(list[k].color) && S.bits(st.left[list[k].pl]) >= 3);
+        if (i === undefined) return done;
+        const sv = S.save();
+        S.apply(i);
+        done.push([i, sv]);
+      }
+    }
     function dfs() {
+      const f = forced();
+      const r = explore();
+      if (r) { for (let j = f.length - 1; j >= 0; j--) path.push(f[j][0]); return true; }
+      for (let j = f.length - 1; j >= 0; j--) S.restore(f[j][0], f[j][1]);
+      return r;
+    }
+    function explore() {
       if (S.won()) return true;
       if (++nodes > budget) return null;
       const k = key();
@@ -900,7 +1259,7 @@
   }
   function buildPlate(pl) {
     const { sh } = pl;
-    const step = 1.5, pad = 5;
+    const step = 2, pad = 5;
     const x0 = sh.box[0] - pad, y0 = sh.box[1] - pad;
     const nx = Math.ceil((sh.box[2] - sh.box[0] + 2 * pad) / step) + 1;
     const ny = Math.ceil((sh.box[3] - sh.box[1] + 2 * pad) / step) + 1;
@@ -943,7 +1302,9 @@
   }
 
   // 衝突用の剛体: 外周を凸な部品に分けた複合剛体。同じ階層の板どうしだけ衝突する。
+  // 階層ごとに2ビット使う: 下のビットはねじの残った板、上のビットはねじ0本の板。ねじ0本どうしはぶつからない(落ちていく板が空中で弾き合わない)
   // 重心は実形状(穴を抜いた格子)の値に置き直し、質量と慣性モーメントも実形状の値にする
+  const tierBit = tier => 1 << (tier % 15) * 2;
   function makeBody(g, x, y, ang, tier) {
     const poly = g.outline.map(([px, py]) => [px + x, py + y]);
     const toV = c => c.map(([px, py]) => ({ x: px, y: py }));
@@ -955,8 +1316,8 @@
     } catch (e) { sets = []; }
     if (!sets.length) sets = [Vertices.hull(toV(poly))];
     const parts = sets.map(vs => Body.create({ position: Vertices.centre(vs), vertices: vs }));
-    const bit = 1 << (tier % 30);
-    const body = Body.create({ parts, frictionAir: 0.012, friction: 0.2, collisionFilter: { group: 0, category: bit, mask: bit } });
+    const bit = tierBit(tier);
+    const body = Body.create({ parts, frictionAir: 0.012, friction: 0.2, collisionFilter: { group: 0, category: bit, mask: bit | bit << 1 } });
     Body.setCentre(body, { x, y });
     Body.setMass(body, g.area * DENSITY);
     Body.setInertia(body, g.inertia * DENSITY * INERTIA_SCALE);
@@ -1080,10 +1441,11 @@
   const known = p => p.tier - topTier < COLOR_DEPTH;     // ねじの色が見えて触れる
 
   // ---- 遮蔽判定: 上の階層の板がねじに少しでも被っていたら外せない ----
-  function isBlocked(s) {
+  // fixedOnly: 動かない板(ねじ2本以上で固定)だけを見る。詰みを揺れが収まる前に決めるのに使う
+  function isBlocked(s, fixedOnly) {
     const p = s.plank, c = holeWorld(p, s.hole);
     for (const q of planks) {
-      if (q.gone || q.tier >= p.tier) continue;
+      if (q.gone || q.tier >= p.tier || (fixedOnly && !q.body.isStatic)) continue;
       const dx = c.x - q.body.position.x, dy = c.y - q.body.position.y;
       if (dx * dx + dy * dy > (q.rad + SR + 3) ** 2) continue;
       const l = rot(dx, dy, -q.body.angle);
@@ -1099,8 +1461,11 @@
     boxes[i] = b;
     pullFromBuffer(b);
   }
+  // 同じ色の箱が2つ開いていたら、多く入っている方へ(早く満杯にして次の箱を出す)。解けるかの判定(makeSim, solveOrder)も同じ規則
   function openBoxFor(color) {
-    return boxes.find(b => b && !b.leaving && b.color === color && b.reserved < 3);
+    let best = null;
+    for (const b of boxes) if (b && !b.leaving && b.color === color && b.reserved < 3 && (!best || b.reserved > best.reserved)) best = b;
+    return best;
   }
   function pullFromBuffer(b) {
     for (let k = 0; k < BUF; k++) {
@@ -1158,7 +1523,10 @@
       }
     } else if (p.screws.length === 0) {
       Body.setStatic(p.body, false);
-      p.body.collisionFilter.mask = 0;   // ねじ0本の板は何にも当たらずに落ちる(止まる位置が読めないと、解ける保証が立たない)
+      // ねじ0本の板は落ちていき、同じ階層でねじの残った板に当たれば引っかかる。ねじ0本どうしはすり抜ける
+      const bit = tierBit(p.tier);
+      p.body.collisionFilter.category = bit << 1;
+      p.body.collisionFilter.mask = bit;
     }
   }
 
@@ -1262,15 +1630,24 @@
   function idle() {
     return !screws.some(s => s.state === 'fly') && boxes.every(b => !b || (!b.leaving && b.enter >= 1));
   }
-  // 盤面が落ち着いているか: 落ちていく板は盤面の下へ抜け、ぶら下がった板の揺れもほぼ止まっている。
+  // 盤面が落ち着いているか: 落ちていく板は盤面の下へ抜けるか、どこかに引っかかって止まり、ぶら下がった板の揺れもほぼ止まっている。
   // 落ちる途中や揺れている途中の板は一瞬だけねじを隠すことがあるので、詰みの判定は落ち着いてから行う
+  // 閾値は小さな揺れも拾う大きさ(角速度 0.001 rad/ステップは、大きな板の振れ幅で1度あまり)。
+  // 0.003 だと振れ幅4度の揺れを落ち着いたとみなし、板の端が 10px 以上動いてねじを覆ったり外したりする
   function settled() {
+    const still = p => p.body.speed < 0.04 && Math.abs(p.body.angularVelocity) < 0.001;
     return planks.every(p => p.gone || p.body.isStatic ||
-      (p.screws.length ? Math.abs(p.body.angularVelocity) < 0.003 : p.body.position.y - p.rad > BOARD.y1));
+      (p.screws.length ? Math.abs(p.body.angularVelocity) < 0.001 : p.body.position.y - p.rad > BOARD.y1 || still(p)));
   }
   function canMove() {
     if (buffer.includes(null)) return true;
     return screws.some(s => s.state === 'board' && known(s.plank) && !isBlocked(s) && openBoxFor(s.color));
+  }
+  // 揺れや落下を待っても手が出ないか: 待機スロットが満杯で、合う箱のあるねじがどれも動かない板に隠れている。
+  // 動かない板はねじを外さない限り動かず、ねじを外せないので、この状態は続く
+  function hopeless() {
+    if (buffer.includes(null)) return false;
+    return !screws.some(s => s.state === 'board' && known(s.plank) && openBoxFor(s.color) && !isBlocked(s, true));
   }
   // 勝ち負けの画面は少し遅れて出す。その間に別の盤面を読み込んだら取り消す(build で clearTimeout)
   let finishTimer = null;
@@ -1330,7 +1707,7 @@
     if (!ended && idle()) {
       const onBoard = screws.some(s => s.state === 'board');
       if (!onBoard && !queue.length && boxes.every(b => !b)) finish(true);
-      else stuckNow = onBoard && settled() && !canMove();
+      else stuckNow = onBoard && !canMove() && (hopeless() || settled());
     }
     stuckT = stuckNow ? stuckT + dt : 0;
     if (stuckT >= STUCK_HOLD) finish(false);
