@@ -851,7 +851,8 @@
   //          { mates: [{ m, j: 当たったときの姿勢(-1 = 当たらない), disc: m の円と届きあう穴のビット }], free: 真下に垂れた姿勢,
   //            poses: [{ top, stat: 落ちる途中で当たる板, discs: [{ m, bits }] }] }
   // drop[q][h] = 姿勢が決まらない板 q が穴 h を最後に外して落ちるとき、落ちる先にかかる同じ階層の板: { r, stat, disc }
-  // catchers[q] = 板 q が引っかかったあと、乗り移りうる同じ階層の板
+  // catchers[q] = 板 q が引っかかったあと、乗り移りうる同じ階層の板。大きな板では実際には同じ階層の板全部になる
+  //          (ステージ1〜40の822枚すべて)。ねじ0本どうしはぶつからないので、同じ階層のねじが全部外れれば乗る相手は残らない
   function buildModel(plates, list) {
     const cov = list.map(() => []);
     const reach = plates.map(pl => pl.holesW.map(([hx, hy]) => {
