@@ -1617,10 +1617,11 @@
   // ねじが外せるようになれば calming が外れて、ふだんの揺れに戻る
   let calming = false, calmT = 0;   // calmT: 打つ手が無い状態が続いている秒数
   const CALM_WAIT = 2;   // これだけ続いて、速く動く板も無ければ、止まりきるのを待たずに詰みにする(寄りかかった板のずり落ちは止まるまで長い)
-  // 速く動いている板が無いか: ぶら下がった板は角速度 0.004 未満、ねじ0本の板は盤面の下へ抜けたか速さ 0.5 未満(落ちている最中の板は待つ)
+  // 速く動いている板が無いか: ぶら下がった板は角速度 0.004 未満、ねじ0本の板は盤面の下へ抜けたか、速さ 0.5 未満かつ角速度 0.004 未満
+  // (落ちている最中の板や、角を支点に傾いていく板は待つ。重心がほとんど動かなくても速く回っていることがある)
   function slow() {
-    return planks.every(p => p.gone || p.body.isStatic ||
-      (p.screws.length ? Math.abs(p.body.angularVelocity) < 0.004 : p.body.position.y - p.rad > BOARD.y1 || p.body.speed < 0.5));
+    return planks.every(p => p.gone || p.body.isStatic || (p.screws.length ? Math.abs(p.body.angularVelocity) < 0.004
+      : p.body.position.y - p.rad > BOARD.y1 || (p.body.speed < 0.5 && Math.abs(p.body.angularVelocity) < 0.004)));
   }
   const CALM = 0.93;   // 1ステップごとに速さへ掛ける率(0.93^60 ≈ 0.013、1秒でほぼ止まる)
   function calmStep() {
