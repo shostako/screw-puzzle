@@ -53,16 +53,20 @@
       0 4px 0 rgba(40, 16, 2, 0.45);
   }
   #title {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    line-height: 1.1;
     font-weight: 800;
-    font-size: 26px;
+    font-size: 24px;
     letter-spacing: 0.04em;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
+  .tools { justify-self: start; display: flex; gap: 8px; }
   .woodbtn {
-    justify-self: start;
-    width: 46px;
-    height: 46px;
+    width: 42px;
+    height: 42px;
     padding: 0;
     border-radius: 50%;
     border: 3px solid var(--wood-edge);
@@ -72,9 +76,9 @@
     place-items: center;
     cursor: pointer;
   }
-  .woodbtn svg { width: 24px; height: 24px; }
+  .woodbtn svg { width: 22px; height: 22px; }
   .woodbtn:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--wood-shadow), inset 0 2px 0 rgba(255, 255, 255, 0.35); }
-  .woodbtn:focus-visible, #mBtn:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
+  .woodbtn:focus-visible, #mBtn:focus-visible, .pickbtn:focus-visible, .subbtn:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
   #prog {
     justify-self: end;
     display: flex;
@@ -100,15 +104,16 @@
     justify-content: center;
   }
   canvas { display: block; touch-action: none; }
-  #modal {
+  #tSub { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; }
+  #modal, #pick {
     position: absolute;
     inset: 0;
     display: grid;
     place-items: center;
     background: rgba(35, 14, 2, 0.55);
   }
-  #modal[hidden] { display: none; }
-  #modal .card {
+  #modal[hidden], #pick[hidden] { display: none; }
+  #modal .card, #pick .card {
     background: linear-gradient(#e2a563, #c47f3e);
     border: 4px solid var(--wood-edge);
     border-radius: 22px;
@@ -135,20 +140,61 @@
     cursor: pointer;
   }
   #mBtn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--go-deep); }
+  .subbtn {
+    font: inherit;
+    font-weight: 800;
+    font-size: 15px;
+    color: var(--ink-edge);
+    background: rgba(255, 244, 225, 0.55);
+    border: 3px solid var(--wood-edge);
+    border-radius: 999px;
+    padding: 8px 18px;
+    cursor: pointer;
+  }
+  .pickHead { margin: 0; font-weight: 800; font-size: 30px; letter-spacing: 0.06em; }
+  #pickNote { margin: 0; color: var(--ink-edge); font-weight: 700; font-size: 13px; }
+  .pickbtn {
+    font: inherit;
+    font-weight: 800;
+    font-size: 18px;
+    color: var(--ink);
+    text-shadow: 0 2px 0 var(--wood-shadow);
+    background: linear-gradient(#f0a95c, #d0802f);
+    border: 3px solid var(--wood-edge);
+    border-radius: 16px;
+    box-shadow: 0 4px 0 var(--wood-shadow);
+    padding: 8px 18px;
+    display: grid;
+    gap: 2px;
+    cursor: pointer;
+  }
+  .pickbtn small { font-size: 12px; font-weight: 700; text-shadow: none; color: #fff4dc; }
+  .pickbtn.on { background: linear-gradient(#78e063, var(--go)); border-color: var(--go-deep); box-shadow: 0 4px 0 var(--go-deep); }
+  .pickbtn:active, .subbtn:active { transform: translateY(3px); }
   @media (prefers-reduced-motion: reduce) {
-    .woodbtn:active, #mBtn:active { transform: none; }
+    .woodbtn:active, #mBtn:active, .pickbtn:active, .subbtn:active { transform: none; }
   }
 </style>
 
 <div id="app">
   <header id="hud">
+    <div class="tools">
     <button id="retry" class="woodbtn" type="button" aria-label="やり直し">
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M19 12a7 7 0 1 1-2.05-4.95" fill="none" stroke="#fff8ea" stroke-width="3.2" stroke-linecap="round"/>
         <path d="M19.5 3.5v5h-5" fill="none" stroke="#fff8ea" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
     </button>
-    <div id="title" class="outlined">ステージ <span id="lv">1</span></div>
+    <button id="dice" class="woodbtn" type="button" aria-label="ランダムな盤面で遊ぶ">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="3.5" y="3.5" width="17" height="17" rx="4" fill="none" stroke="#fff8ea" stroke-width="2.6"/>
+        <circle cx="8.6" cy="8.6" r="1.7" fill="#fff8ea"/><circle cx="15.4" cy="8.6" r="1.7" fill="#fff8ea"/>
+        <circle cx="12" cy="12" r="1.7" fill="#fff8ea"/>
+        <circle cx="8.6" cy="15.4" r="1.7" fill="#fff8ea"/><circle cx="15.4" cy="15.4" r="1.7" fill="#fff8ea"/>
+      </svg>
+    </button>
+    </div>
+    <div id="title" class="outlined"><span id="tMain">ステージ 1</span><span id="tSub" hidden></span></div>
     <div id="prog" class="outlined" aria-label="外したねじの割合"><span class="coin"></span><span id="pct">0%</span></div>
   </header>
   <div id="stage">
@@ -158,6 +204,18 @@
         <p id="mTitle" class="outlined"></p>
         <p id="mSub"></p>
         <button id="mBtn" type="button"></button>
+        <button id="mBack" class="subbtn" type="button" hidden>ステージに戻る</button>
+      </div>
+    </div>
+    <div id="pick" hidden>
+      <div class="card">
+        <p class="pickHead outlined">ランダム</p>
+        <p id="pickNote">毎回ちがう盤面。どれも解ける手順がある</p>
+        <button class="pickbtn" type="button" data-diff="0">やさしい<small></small></button>
+        <button class="pickbtn" type="button" data-diff="1">ふつう<small></small></button>
+        <button class="pickbtn" type="button" data-diff="2">むずかしい<small></small></button>
+        <button id="pickBack" class="subbtn" type="button">ステージに戻る</button>
+        <button id="pickClose" class="subbtn" type="button">とじる</button>
       </div>
     </div>
   </div>
@@ -531,12 +589,12 @@
     return { plates, S, tiers: new Set(plates.map(p => p.tb)).size };
   }
 
-  function genLevel(lv) {
+  function genLevel(lv, seed) {
     // 配置が早く行き詰まって目標の段数に届かなかったら、種を変えて作り直す(同じ番号なら同じ盤面)
     const goal = tierGoal(lv);
     let pick = null, last = null;
     for (let k = 0; k < 8; k++) {
-      const rnd = mulberry32(lv * 7919 + 13 + k * 104729);
+      const rnd = mulberry32(seed + k * 104729);
       const g = placePlates(lv, rnd);
       g.rnd = rnd;
       last = g;
@@ -907,15 +965,46 @@
   }
 
   // ---- ステージ構築 ----
+  // ---- 遊び方(ステージ / ランダム) ----
+  // ステージはステージ番号から決まる固定の盤面。ランダムは難しさを選び、毎回ちがう番号(種)で作る。
+  // ランダムで遊んでもステージの到達点は変えない
+  const DIFFS = [
+    { name: 'やさしい', lv: 3 },
+    { name: 'ふつう', lv: 8 },
+    { name: 'むずかしい', lv: 16 },
+  ];
+  let cur = { mode: 'stage', lv: 1 }, stageLv = 1;
+  const stageSeed = lv => lv * 7919 + 13;
+  function newSeed() {
+    try { return 100000 + crypto.getRandomValues(new Uint32Array(1))[0] % 900000; }
+    catch (e) { return 100000 + Math.floor(Math.random() * 900000); }
+  }
   function loadLevel(lv) {
-    level = lv;
+    stageLv = lv;
     try { localStorage.setItem('screw-level', String(lv)); } catch (e) {}
+    cur = { mode: 'stage', lv };
+    build(lv, stageSeed(lv));
+  }
+  function loadRandom(diff, seed = newSeed()) {
+    try { localStorage.setItem('screw-rand-diff', String(diff)); } catch (e) {}
+    cur = { mode: 'random', diff, seed };
+    build(DIFFS[diff].lv, seed);
+  }
+  const restart = () => cur.mode === 'stage' ? loadLevel(cur.lv) : loadRandom(cur.diff, cur.seed);
+  function setTitle() {
+    const main = document.getElementById('tMain'), sub = document.getElementById('tSub');
+    if (cur.mode === 'stage') { main.textContent = `ステージ ${cur.lv}`; sub.hidden = true; }
+    else { main.textContent = 'ランダム'; sub.textContent = `${DIFFS[cur.diff].name} #${cur.seed}`; sub.hidden = false; }
+  }
+
+  function build(lv, seed) {
+    level = lv;
     ended = false;
     flashBuf = 0;
     stuckT = 0;
     engine = Engine.create();
     engine.gravity.y = 1.1;
-    const data = genLevel(lv);
+    const data = genLevel(lv, seed);
 
     planks = data.plates.map(pl => {
       const g = buildPlate(pl);
@@ -942,7 +1031,7 @@
     for (let i = 0; i < ACTIVE; i++) spawnBox(i);
     updateTop();
     planks.forEach(p => { p.vis = visible(p) ? 1 : 0; p.cvis = known(p) ? 1 : 0; });
-    document.getElementById('lv').textContent = lv;
+    setTitle();
     document.getElementById('modal').hidden = true;
     updateHud();
   }
@@ -1120,11 +1209,34 @@
     }
     if (best) tapScrew(best);
   });
-  document.getElementById('retry').addEventListener('click', () => loadLevel(level));
-  document.getElementById('mBtn').addEventListener('click', () => {
-    const won = document.getElementById('mBtn').dataset.won === '1';
-    loadLevel(won ? level + 1 : level);
+  const $ = id => document.getElementById(id);
+  $('retry').addEventListener('click', restart);
+  $('mBtn').addEventListener('click', () => {
+    const won = $('mBtn').dataset.won === '1';
+    if (!won) restart();
+    else if (cur.mode === 'stage') loadLevel(cur.lv + 1);
+    else loadRandom(cur.diff);
   });
+  $('mBack').addEventListener('click', () => loadLevel(stageLv));
+  // サイコロ: 難しさを選んでランダムな盤面へ
+  const pickBtns = [...document.querySelectorAll('.pickbtn')];
+  pickBtns.forEach(b => {
+    const d = DIFFS[+b.dataset.diff];
+    b.querySelector('small').textContent = `${colorsFor(d.lv)}色・${tierGoal(d.lv)}段` + (d.lv >= 5 ? '・先読みが要る' : '');
+    b.addEventListener('click', () => { $('pick').hidden = true; loadRandom(+b.dataset.diff); });
+  });
+  $('dice').addEventListener('click', () => {
+    let last = 1;
+    try { last = parseInt(localStorage.getItem('screw-rand-diff'), 10); } catch (e) {}
+    if (!(last >= 0 && last < DIFFS.length)) last = 1;
+    pickBtns.forEach(b => b.classList.toggle('on', +b.dataset.diff === last));
+    $('pickBack').hidden = cur.mode === 'stage';
+    $('pickBack').textContent = `ステージ ${stageLv} に戻る`;
+    $('pick').hidden = false;
+  });
+  $('pickBack').addEventListener('click', () => { $('pick').hidden = true; loadLevel(stageLv); });
+  $('pickClose').addEventListener('click', () => { $('pick').hidden = true; });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') $('pick').hidden = true; });
 
   // ---- 音 ----
   let actx = null;
@@ -1163,12 +1275,14 @@
   function finish(won) {
     ended = true;
     setTimeout(() => {
+      const rand = cur.mode === 'random';
       document.getElementById('mTitle').textContent = won ? 'クリア' : '詰み';
       document.getElementById('mSub').textContent = won
-        ? `ステージ ${level} の板を全部落とした`
+        ? (rand ? `ランダム（${DIFFS[cur.diff].name}）#${cur.seed} の板を全部落とした` : `ステージ ${cur.lv} の板を全部落とした`)
         : '待機スロットが埋まって、入れられるねじが無い';
+      document.getElementById('mBack').hidden = !rand;
       const btn = document.getElementById('mBtn');
-      btn.textContent = won ? '次のステージへ' : 'もう一回';
+      btn.textContent = won ? (rand ? '次のランダムへ' : '次のステージへ') : 'もう一回';
       btn.dataset.won = won ? '1' : '0';
       document.getElementById('modal').hidden = false;
     }, won ? 700 : 350);
