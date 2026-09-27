@@ -1422,7 +1422,7 @@
     clearTimeout(finishTimer);
     ended = false;
     flashBuf = 0;
-    stuckT = 0;
+    stuckT = 0; calmT = 0;
     engine = Engine.create();
     engine.gravity.y = 1.1;
     const data = genLevel(lv, seed);
@@ -1612,6 +1612,26 @@
   }
 
   // 物理1ステップごとに、押し出し中の板の回転速度を下支えする
+  // 打つ手が無い間(待機スロットが満杯で、入れられるねじが外せない)は、ぶら下がった板の揺れに強いブレーキをかける。
+  // 止まる位置は変わらず、止まるまでが速くなる。大きな板は揺れが収まるまで6〜7秒かかり、その間は詰みを決められなかった。
+  // ねじが外せるようになれば calming が外れて、ふだんの揺れに戻る
+  let calming = false, calmT = 0;   // calmT: 打つ手が無い状態が続いている秒数
+  const CALM_WAIT = 2;   // これだけ続いて、速く動く板も無ければ、止まりきるのを待たずに詰みにする(寄りかかった板のずり落ちは止まるまで長い)
+  // 速く動いている板が無いか: ぶら下がった板は角速度 0.004 未満、ねじ0本の板は盤面の下へ抜けたか速さ 0.5 未満(落ちている最中の板は待つ)
+  function slow() {
+    return planks.every(p => p.gone || p.body.isStatic ||
+      (p.screws.length ? Math.abs(p.body.angularVelocity) < 0.004 : p.body.position.y - p.rad > BOARD.y1 || p.body.speed < 0.5));
+  }
+  const CALM = 0.93;   // 1ステップごとに速さへ掛ける率(0.93^60 ≈ 0.013、1秒でほぼ止まる)
+  function calmStep() {
+    if (!calming) return;
+    for (const p of planks) {
+      if (!p.constraint || p.nudge) continue;
+      const b = p.body;
+      Body.setVelocity(b, { x: b.velocity.x * CALM, y: b.velocity.y * CALM });
+      Body.setAngularVelocity(b, b.angularVelocity * CALM);
+    }
+  }
   function nudgeStep() {
     for (const p of planks) {
       const n = p.nudge;
@@ -1680,7 +1700,7 @@
   function rewindTo(k) {
     clearTimeout(finishTimer);
     clearFx();
-    ended = false; stuckT = 0; flashBuf = 0;
+    ended = false; stuckT = 0; calmT = 0; flashBuf = 0;
     document.getElementById('modal').hidden = true;
     quiet = true;
     for (const p of planks) p.screws = [];
@@ -1979,11 +1999,16 @@
     // 詰みは「落ち着いていて外せる手が無い」状態が STUCK_HOLD 秒続いたときだけ。
     // ぶら下がった板は揺れの折り返しで一瞬止まるので、その瞬間だけで決めない
     let stuckNow = false;
+    calming = false;
     if (!ended && idle()) {
       const onBoard = screws.some(s => s.state === 'board');
       if (!onBoard && !queue.length && boxes.every(b => !b)) finish(true);
-      else stuckNow = onBoard && !canMove() && (hopeless() || settled());
+      else if (onBoard && !canMove()) {
+        calming = true;                           // 打つ手が無い間は、ぶら下がった板の揺れを早く収める(calmStep)
+        stuckNow = hopeless() || settled() || (calmT >= CALM_WAIT && slow());
+      }
     }
+    calmT = calming ? calmT + dt : 0;
     stuckT = stuckNow ? stuckT + dt : 0;
     if (stuckT >= STUCK_HOLD) finish(false);
   }
@@ -2327,7 +2352,7 @@
     let dt = now - last; last = now;
     if (dt > 100) dt = 100;
     acc += dt;
-    while (acc >= STEP) { nudgeStep(); Engine.update(engine, STEP); acc -= STEP; }
+    while (acc >= STEP) { nudgeStep(); calmStep(); Engine.update(engine, STEP); acc -= STEP; }
     update(dt / 1000);
     updateFx(dt / 1000);
     draw();
