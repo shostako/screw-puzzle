@@ -548,22 +548,34 @@
     plates.forEach(p => { p.tier = tbs.indexOf(p.tb); });
     const nColors = colorsFor(lv);
 
-    // 箱の順番を先に決め、上の階層のねじほど早い箱の色になるよう割り当てる。
-    // 解けるか確かめ、解けなければ割り当て直す。10回ごとに混ぜ方を弱め、最後は混ぜない(必ず解ける)
+    // 箱の順番を先に決め、上の階層のねじほど早い箱の色になるよう、階層をまたいで混ぜながら割り当てる。
+    // 解ける手順があり、しかも手なりでは解けない割り当てを探す(ステージが進むほど厳しく)
     const palette = shuffle(COLORS.map((_, i) => i), rnd).slice(0, nColors);
     const boxQueue = [];
     for (let i = 0; i < S / 3; i++) boxQueue.push(palette[i % nColors]);
     shuffle(boxQueue, rnd);
     const list = [];
-    plates.forEach((p, li) => p.sh.holes.forEach((h, hi) => list.push({ pl: li, hi, tier: p.tier })));
-    let win = Math.min(4 + lv, 11), noise = 1.5, tries = 0;
-    for (;;) {
+    plates.forEach((p, li) => p.sh.holes.forEach((h, hi) => list.push({ pl: li, hi, tier: p.tier, x: p.holesW[hi][0], y: p.holesW[hi][1] })));
+    const cov = buildModel(plates, list);
+    const hard = lv >= 5 ? 2 : lv >= 2 ? 1 : 0;   // 0: 解ければよい 1: 上から順に外すだけでは解けない 2: さらに手なりでも解けない
+    const win = Math.min(5 + lv, 14), noise = Math.min(1.5 + lv * 0.1, 3);
+    let choice = null, spare = null, tries = 0;
+    for (; tries < TRY_ASSIGN && !choice; tries++) {
       assignColors(list, boxQueue, win, noise, rnd);
-      tries++;
-      if (solvable(list, boxQueue)) break;
-      if (tries % 10 === 0) { win = Math.max(1, win - 2); noise = Math.max(0, noise - 0.5); }
+      const easy = (hard >= 1 && solvable(list, boxQueue)) || (hard >= 2 && greedyPlay(plates, list, boxQueue, cov));
+      if (easy && spare) continue;               // 易しい割り当ての控えは1つで足りる
+      const path = solveFull(plates, list, boxQueue, cov, SOLVE_BUDGET);
+      if (!path) continue;
+      const rec = { colors: list.map(x => x.color), path, easy };
+      if (easy) spare = rec; else choice = rec;
     }
-    genStats = { tries, win, noise };
+    if (!choice) choice = spare;
+    if (!choice) {                                  // 最後の砦: 混ぜない割り当て。上から順に外すだけで必ず解ける
+      assignColors(list, boxQueue, 1, 0, rnd);
+      choice = { colors: list.map(x => x.color), path: solveOrder(list, boxQueue), easy: true, fallback: true };
+    }
+    list.forEach((x, i) => { x.color = choice.colors[i]; });
+    genStats = { tries, hard, easy: choice.easy, fallback: !!choice.fallback, path: choice.path };
     const tints = shuffle(TINTS.slice(), rnd);                 // 同じ階層の板は同じ色
     plates.forEach(p => { p.tint = tints[p.tier % tints.length]; });
     return { plates, screws: list, queue: boxQueue, rnd };
@@ -621,6 +633,145 @@
     return !boxes.length && !q.length && !buf.length ? order : null;
   }
   const solvable = (list, queue) => solveOrder(list, queue) !== null;
+
+  // ---- 解けるかの判定(見えていて外せるねじ全部が手の候補) ----
+  // 板の動きは安全側に見積もる。この見積もりで外せる手順は、実際のゲームでも必ず外せる
+  //  ・ねじ2本以上の板は動かないので、置いた位置の形で隠す(判定の輪はゲームより 2 大きい)
+  //  ・1本留めの板は揺れ方や衝突で向きが変わるので、残ったねじを中心に板が届く円の中はすべて隠すとみなす
+  //  ・ねじ0本の板は何にも当たらずに落ちるので、落ちきれば何も隠さない(落ちきるのを待つ前提)
+  const TRY_ASSIGN = 30;      // 色の割り当てを試す回数
+  const SOLVE_BUDGET = 6000;  // 手順探索の打ち切り(調べる局面の数)
+  const RING_SAFE = [[0, 0]];
+  for (let k = 0; k < 16; k++) RING_SAFE.push([Math.cos(k * TAU / 16) * (SR + 3), Math.sin(k * TAU / 16) * (SR + 3)]);
+
+  // cov[i] = ねじ i を隠しうる上の階層の板: { q, stat: 動かないときに隠すか, disc: 1本留めで隠す支点(穴番号のビット) }
+  function buildModel(plates, list) {
+    const cov = list.map(() => []);
+    plates.forEach((pl, q) => {
+      const reach = pl.holesW.map(([hx, hy]) => {
+        let m = 0;
+        for (const [x, y] of pl.wp) m = Math.max(m, len(x - hx, y - hy));
+        return m + 12;                            // 粗い格子の目の分と縁取りと、支点のわずかな伸びの分
+      });
+      list.forEach((s, i) => {
+        if (s.tier <= pl.tier) return;
+        const l = unplace(pl, s.x, s.y);
+        const stat = RING_SAFE.some(([ox, oy]) => pl.sh.f(l[0] + ox, l[1] + oy) < 0);
+        let disc = 0;
+        pl.holesW.forEach(([hx, hy], hi) => { if (len(s.x - hx, s.y - hy) < reach[hi] + SR + 3) disc |= 1 << hi; });
+        if (stat || disc) cov[i].push({ q, stat, disc });
+      });
+    });
+    return cov;
+  }
+
+  // 盤面の数え上げ用の模擬(物理なし)。apply で1本外し、save/restore で戻す
+  function makeSim(plates, list, queue, cov) {
+    const N = list.length;
+    const T = list.reduce((m, s) => Math.max(m, s.tier), 0) + 1;
+    const st = {
+      left: plates.map(pl => (1 << pl.sh.holes.length) - 1),   // 板ごとに残っている穴(ビット)
+      removed: new Uint8Array(N), tierLeft: new Int32Array(T),
+      boxes: [], qi: 0, buf: new Array(COLORS.length).fill(0), bufN: 0, done: 0,
+    };
+    list.forEach(s => { st.tierLeft[s.tier]++; });
+    const bits = m => (m & 1) + (m >> 1 & 1) + (m >> 2 & 1) + (m >> 3 & 1) + (m >> 4 & 1);
+    const topTier = () => { for (let t = 0; t < T; t++) if (st.tierLeft[t]) return t; return T; };
+    const blocked = i => {
+      for (const c of cov[i]) {
+        const m = st.left[c.q], n = bits(m);
+        if (n >= 2 ? c.stat : n === 1 && (c.disc & m)) return true;
+      }
+      return false;
+    };
+    const avail = () => {
+      const t0 = topTier(), out = [];
+      for (let i = 0; i < N; i++) if (!st.removed[i] && list[i].tier - t0 < COLOR_DEPTH && !blocked(i)) out.push(i);
+      return out;
+    };
+    const spawn = () => {
+      while (st.boxes.length < ACTIVE && st.qi < queue.length) {
+        const b = { c: queue[st.qi++], n: 0 };
+        const take = Math.min(3, st.buf[b.c]);
+        st.buf[b.c] -= take; st.bufN -= take; b.n = take;
+        if (b.n < 3) st.boxes.push(b);
+      }
+    };
+    const openFor = c => st.boxes.find(b => b.c === c);
+    const apply = i => {                          // false = 合う箱が無く待機スロットも満杯
+      const c = list[i].color, b = openFor(c);
+      if (!b && st.bufN >= BUF) return false;
+      st.removed[i] = 1; st.left[list[i].pl] &= ~(1 << list[i].hi); st.tierLeft[list[i].tier]--; st.done++;
+      if (b) { if (++b.n === 3) { st.boxes.splice(st.boxes.indexOf(b), 1); spawn(); } }
+      else { st.buf[c]++; st.bufN++; }
+      return true;
+    };
+    const save = () => ({ boxes: st.boxes.map(b => ({ c: b.c, n: b.n })), qi: st.qi, buf: st.buf.slice(), bufN: st.bufN });
+    const restore = (i, sv) => {
+      st.removed[i] = 0; st.left[list[i].pl] |= 1 << list[i].hi; st.tierLeft[list[i].tier]++; st.done--;
+      st.boxes = sv.boxes; st.qi = sv.qi; st.buf = sv.buf; st.bufN = sv.bufN;
+    };
+    const won = () => st.done === N && !st.boxes.length && st.qi === queue.length && !st.bufN;
+    spawn();
+    return { st, avail, apply, save, restore, won, openFor, topTier };
+  }
+
+  // 手なり: 合う箱があるねじを入れ、無ければ見えている中で一番多い色を待機スロットへ(箱の順番は知らない)
+  function greedyPlay(plates, list, queue, cov) {
+    const S = makeSim(plates, list, queue, cov), st = S.st;
+    while (!S.won()) {
+      const A = S.avail();
+      if (!A.length) return false;
+      let i = A.find(k => S.openFor(list[k].color));
+      if (i === undefined) {
+        if (st.bufN >= BUF) return false;
+        const cnt = new Array(COLORS.length).fill(0), t0 = S.topTier();
+        list.forEach((s, k) => { if (!st.removed[k] && s.tier - t0 < COLOR_DEPTH) cnt[s.color]++; });
+        for (let c = 0; c < cnt.length; c++) cnt[c] += 2 * st.buf[c];
+        i = A.reduce((a, k) => cnt[list[k].color] > cnt[list[a].color] ? k : a, A[0]);
+      }
+      S.apply(i);
+    }
+    return true;
+  }
+
+  // 手順の探索(深さ優先、行き止まりの局面は覚えておく)。返り値: 外す順番 / false(解けない) / null(打ち切り)
+  function solveFull(plates, list, queue, cov, budget) {
+    const S = makeSim(plates, list, queue, cov), st = S.st, path = [], dead = new Set();
+    let nodes = 0;
+    const need = c => { for (let k = st.qi; k < queue.length; k++) if (queue[k] === c) return k - st.qi; return 99; };
+    const key = () => st.left.join(',') + '|' + st.qi + ':' + st.boxes.map(b => b.c + '.' + b.n).join(',') + '|' + st.buf.join('');
+    function dfs() {
+      if (S.won()) return true;
+      if (++nodes > budget) return null;
+      const k = key();
+      if (dead.has(k)) return false;
+      const A = S.avail();
+      const moves = A.filter(i => S.openFor(list[i].color)).sort((a, b) => list[b].tier - list[a].tier);
+      if (st.bufN < BUF) {                       // 待機スロットへ置く手は、早く要る色から3色、各2本まで
+        const byColor = new Map();
+        for (const i of A) {
+          const c = list[i].color;
+          if (S.openFor(c)) continue;
+          if (!byColor.has(c)) byColor.set(c, []);
+          if (byColor.get(c).length < 2) byColor.get(c).push(i);
+        }
+        [...byColor.entries()].sort((a, b) => need(a[0]) - need(b[0])).slice(0, 3).forEach(e => moves.push(...e[1]));
+      }
+      for (const i of moves) {
+        const sv = S.save();
+        if (!S.apply(i)) continue;
+        const r = dfs();
+        if (r) { path.push(i); return true; }
+        S.restore(i, sv);
+        if (r === null) return null;
+      }
+      dead.add(k);
+      return false;
+    }
+    const r = dfs();
+    return r ? path.reverse() : r;
+  }
 
   // ---- 板の輪郭と質量 ----
   // 距離関数を格子で標本化し、マーチングスクエアで輪郭線を取り出す
@@ -915,6 +1066,7 @@
       }
     } else if (p.screws.length === 0) {
       Body.setStatic(p.body, false);
+      p.body.collisionFilter.mask = 0;   // ねじ0本の板は何にも当たらずに落ちる(止まる位置が読めないと、解ける保証が立たない)
     }
   }
 
@@ -995,6 +1147,12 @@
   function idle() {
     return !screws.some(s => s.state === 'fly') && boxes.every(b => !b || (!b.leaving && b.enter >= 1));
   }
+  // 盤面が落ち着いているか: 落ちていく板は盤面の下へ抜け、ぶら下がった板の揺れもほぼ止まっている。
+  // 落ちる途中や揺れている途中の板は一瞬だけねじを隠すことがあるので、詰みの判定は落ち着いてから行う
+  function settled() {
+    return planks.every(p => p.gone || p.body.isStatic ||
+      (p.screws.length ? Math.abs(p.body.angularVelocity) < 0.003 : p.body.position.y - p.rad > BOARD.y1));
+  }
   function canMove() {
     if (buffer.includes(null)) return true;
     return screws.some(s => s.state === 'board' && known(s.plank) && !isBlocked(s) && openBoxFor(s.color));
@@ -1049,7 +1207,7 @@
     if (!ended && idle()) {
       const onBoard = screws.some(s => s.state === 'board');
       if (!onBoard && !queue.length && boxes.every(b => !b)) finish(true);
-      else if (onBoard && !canMove()) finish(false);
+      else if (onBoard && settled() && !canMove()) finish(false);
     }
   }
 
