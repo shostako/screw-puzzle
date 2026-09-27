@@ -504,7 +504,7 @@
         placed++;
         S += sh.holes.length;
       }
-      if (placed === 1 && plates.length > 1) {    // 1枚しか入らなかった階層は取り消す
+      if (placed === 1) {                        // 1枚しか入らなかった階層は取り消す(一番下の階層も)
         S -= plates.pop().sh.holes.length;
         placed = 0;
       }
