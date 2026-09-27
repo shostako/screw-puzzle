@@ -126,7 +126,7 @@
   }
   #mTitle { margin: 0; font-weight: 800; font-size: 34px; letter-spacing: 0.06em; }
   #mSub { margin: 0; color: var(--ink-edge); font-weight: 700; font-size: 14px; }
-  #mBtn {
+  .gobtn {
     font: inherit;
     font-weight: 800;
     font-size: 18px;
@@ -139,7 +139,24 @@
     padding: 10px 22px;
     cursor: pointer;
   }
-  #mBtn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--go-deep); }
+  .gobtn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--go-deep); }
+  .gobtn:disabled { filter: saturate(0.4); cursor: progress; }
+  #toast {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(88%, 340px);
+    padding: 8px 14px;
+    border-radius: 14px;
+    background: rgba(35, 14, 2, 0.82);
+    color: #fff4dc;
+    font-weight: 700;
+    font-size: 13px;
+    line-height: 1.5;
+    text-align: center;
+    pointer-events: none;
+  }
   .subbtn {
     font: inherit;
     font-weight: 800;
@@ -172,7 +189,7 @@
   .pickbtn.on { background: linear-gradient(#78e063, var(--go)); border-color: var(--go-deep); box-shadow: 0 4px 0 var(--go-deep); }
   .pickbtn:active, .subbtn:active { transform: translateY(3px); }
   @media (prefers-reduced-motion: reduce) {
-    .woodbtn:active, #mBtn:active, .pickbtn:active, .subbtn:active { transform: none; }
+    .woodbtn:active, .gobtn:active, .pickbtn:active, .subbtn:active { transform: none; }
   }
 </style>
 
@@ -199,11 +216,13 @@
   </header>
   <div id="stage">
     <canvas id="cv"></canvas>
+    <div id="toast" hidden></div>
     <div id="modal" hidden>
       <div class="card">
         <p id="mTitle" class="outlined"></p>
         <p id="mSub"></p>
-        <button id="mBtn" type="button"></button>
+        <button id="mUndo" class="gobtn" type="button" hidden>解ける所まで戻る</button>
+        <button id="mBtn" class="gobtn" type="button"></button>
         <button id="mBack" class="subbtn" type="button" hidden>ステージに戻る</button>
       </div>
     </div>
@@ -281,6 +300,11 @@
   let stuckT = 0;          // 詰みの状態が続いている秒数
   const STUCK_HOLD = 0.8;
   let genStats = null;   // 直近の盤面生成で、色の割り当てを何回やり直したか(確認用)
+  let level = null;      // 今の盤面の元データ(板、ねじの並び、箱の順番、見積もり)。戻る先を探すのに使う
+  let hist = [];         // 外した手の記録: { i: ねじの番号, phys: 外す直前の板の状態 }
+  let boardId = 0;       // 盤面を読み込むたびに増やす(戻る先を探している間に盤面が替わったら捨てる)
+  let hint = null;       // 戻したあと、分かれ目になった手のねじに出す赤い輪: { s, t: 残り秒数 }
+  let quiet = false;     // 記録から局面を組み直している間は音を出さない
 
   const cv = document.getElementById('cv');
   const ctx = cv.getContext('2d');
@@ -763,7 +787,7 @@
     genStats = { tries, hard, easy: choice.easy, fallback: !!choice.fallback, path: choice.path };
     const tints = shuffle(TINTS.slice(), rnd);                 // 同じ階層の板は同じ色
     plates.forEach(p => { p.tint = tints[p.tier % tints.length]; });
-    return { plates, screws: list, queue: boxQueue, rnd };
+    return { plates, screws: list, queue: boxQueue, rnd, model };
   }
 
   // 箱の色の並び(1箱3本)を窓の中で混ぜ、上の階層ほど前の色を割り当てる。noise は階層をまたぐ混ざり具合
@@ -1136,8 +1160,10 @@
   }
 
   // 手順の探索(深さ優先、行き止まりの局面は覚えておく)。返り値: 外す順番 / false(解けない) / null(打ち切り)
-  function solveFull(plates, list, queue, model, budget) {
+  // prefix: 先に外しておく手(途中の局面から探すとき)。返す手順に prefix は含まない
+  function solveFull(plates, list, queue, model, budget, prefix = []) {
     const S = makeSim(plates, list, queue, model), st = S.st, path = [], dead = new Set();
+    for (const i of prefix) if (!S.apply(i)) return false;
     let nodes = 0;
     const need = c => { for (let k = st.qi; k < queue.length; k++) if (queue[k] === c) return k - st.qi; return 99; };
     const key = () => st.left.join(',') + '|' + (st.nHung ? st.hungTop.join(',') : '') + '|' + st.wild.join('') + '|' + st.qi + ':' + st.boxes.map(b => b.c + '.' + b.n).join(',') + '|' + st.buf.join('');
@@ -1366,6 +1392,10 @@
     engine = Engine.create();
     engine.gravity.y = 1.1;
     const data = genLevel(lv, seed);
+    level = { plates: data.plates, list: data.screws, queue: data.queue.slice(), model: data.model };
+    hist = [];
+    hint = null;
+    boardId++;
 
     planks = data.plates.map(pl => {
       const g = buildPlate(pl);
@@ -1376,9 +1406,9 @@
       return { body, tier: pl.tier, tint: pl.tint, path: g.path, holes: g.holes, f: g.f, rad: g.rad, screws: [], constraint: null, nudge: null, gone: false, vis: 1, cvis: 1 };
     });
 
-    screws = data.screws.map(s => {
+    screws = data.screws.map((s, idx) => {
       const sc = {
-        plank: planks[s.pl], hole: s.hi, color: s.color, state: 'board',
+        idx, plank: planks[s.pl], hole: s.hi, color: s.color, state: 'board',
         rot: (data.rnd() - 0.5) * 0.5 - planks[s.pl].body.angle,   // 十字は置いた時点でほぼ正立
         shake: 0, from: null, dest: null, t: 0,
       };
@@ -1490,7 +1520,7 @@
       s.state = 'box';
       const b = s.dest.box;
       b.arrived++;
-      if (b.arrived === 3) { b.leaving = true; b.leave = 0; chime(); }
+      if (b.arrived === 3) { b.leaving = true; b.leave = 0; if (!quiet) chime(); }
     } else {
       s.state = 'buffer';
       boxes.forEach(b => { if (b && !b.leaving) pullFromBuffer(b); });
@@ -1498,6 +1528,16 @@
   }
 
   // ---- 板からねじを抜く ----
+  // 板を支点 a(盤面に固定)で吊る。h は板の穴の今の位置
+  function pin(p, a, h) {
+    p.constraint = Constraint.create({
+      pointA: { x: a.x, y: a.y },
+      bodyB: p.body,
+      pointB: { x: h.x - p.body.position.x, y: h.y - p.body.position.y },
+      length: 0, stiffness: 0.9, damping: 0.05,
+    });
+    Composite.add(engine.world, p.constraint);
+  }
   function detach(s) {
     const p = s.plank;
     p.screws = p.screws.filter(x => x !== s);
@@ -1507,13 +1547,7 @@
       const r = p.screws[0];
       const w = holeWorld(p, r.hole);
       Body.setStatic(p.body, false);
-      p.constraint = Constraint.create({
-        pointA: { x: w.x, y: w.y },
-        bodyB: p.body,
-        pointB: { x: w.x - p.body.position.x, y: w.y - p.body.position.y },
-        length: 0, stiffness: 0.9, damping: 0.05,
-      });
-      Composite.add(engine.world, p.constraint);
+      pin(p, w, w);
       // 重心が残ったねじのほぼ真上にある(倒立の釣り合い)と、物理的には倒れるはずでも静止したままになる。
       // 左右どちらかへゆっくり押し出して、ひっくり返らせる。重心が少しでもずれていればその向きへ
       const dx = p.body.position.x - w.x, dy = p.body.position.y - w.y, d = len(dx, dy);
@@ -1541,19 +1575,23 @@
     }
   }
 
+  // ねじの行き先を確保する: 合う箱、無ければ待機スロット。どちらも無ければ null
+  function claim(s) {
+    const b = openBoxFor(s.color);
+    if (b) {
+      b.items.push(s);
+      return { kind: 'box', box: b, slot: b.reserved++ };
+    }
+    const k = buffer.indexOf(null);
+    if (k < 0) return null;
+    buffer[k] = s;
+    return { kind: 'buf', idx: k };
+  }
   function tapScrew(s) {
     if (!known(s.plank) || isBlocked(s)) { s.shake = 0.3; buzz(); return; }
-    const b = openBoxFor(s.color);
-    let dest;
-    if (b) {
-      dest = { kind: 'box', box: b, slot: b.reserved++ };
-      b.items.push(s);
-    } else {
-      const k = buffer.indexOf(null);
-      if (k < 0) { flashBuf = 0.45; buzz(); return; }
-      buffer[k] = s;
-      dest = { kind: 'buf', idx: k };
-    }
+    if (!openBoxFor(s.color) && !buffer.includes(null)) { flashBuf = 0.45; buzz(); return; }
+    hist.push({ i: s.idx, phys: snapPhys() });
+    const dest = claim(s);
     const from = holeWorld(s.plank, s.hole);
     detach(s);
     s.state = 'board';
@@ -1562,6 +1600,113 @@
     updateHud();
     click();
     try { navigator.vibrate && navigator.vibrate(12); } catch (e) {}
+  }
+
+  // ---- 戻る ----
+  // 外す直前の板の状態(位置、角度、速さ、固定か、支点、押し出し中か)
+  function snapPhys() {
+    return planks.map(p => {
+      const b = p.body;
+      return {
+        x: b.position.x, y: b.position.y, a: b.angle, vx: b.velocity.x, vy: b.velocity.y, w: b.angularVelocity,
+        stat: b.isStatic, cat: b.collisionFilter.category, mask: b.collisionFilter.mask, gone: p.gone,
+        pin: p.constraint ? { x: p.constraint.pointA.x, y: p.constraint.pointA.y } : null,
+        nudge: p.nudge ? { ...p.nudge } : null,
+      };
+    });
+  }
+  // 飛んでいるねじと出入りしている箱を、動きなしで行き着かせる
+  function settleNow() {
+    for (let guard = 0; guard < 500; guard++) {
+      let busy = false;
+      for (const s of screws) if (s.state === 'fly') { s.t = 1; arrive(s); busy = true; }
+      for (let i = 0; i < ACTIVE; i++) {
+        const b = boxes[i];
+        if (!b) continue;
+        b.enter = 1;
+        if (b.leaving) { b.items.forEach(x => { x.state = 'done'; }); spawnBox(i); busy = true; }
+      }
+      if (!busy) return;
+    }
+  }
+  // k 手目を外す直前へ戻す。ねじと箱は最初の並びから k 手を動きなしで入れ直し、板は記録した状態に置き直す
+  function rewindTo(k) {
+    clearTimeout(finishTimer);
+    ended = false; stuckT = 0; flashBuf = 0;
+    document.getElementById('modal').hidden = true;
+    quiet = true;
+    for (const p of planks) p.screws = [];
+    for (const s of screws) { s.state = 'board'; s.dest = null; s.from = null; s.t = 0; s.shake = 0; s.plank.screws.push(s); }
+    queue = level.queue.slice();
+    boxes = new Array(ACTIVE).fill(null);
+    buffer = new Array(BUF).fill(null);
+    for (let i = 0; i < ACTIVE; i++) spawnBox(i);
+    settleNow();
+    for (let j = 0; j < k; j++) {
+      const s = screws[hist[j].i], dest = claim(s);
+      s.plank.screws = s.plank.screws.filter(x => x !== s);
+      launch(s, dest);
+      settleNow();
+    }
+    quiet = false;
+    const snap = hist[k].phys;
+    planks.forEach((p, n) => {
+      const r = snap[n], b = p.body;
+      if (p.constraint) { Composite.remove(engine.world, p.constraint); p.constraint = null; }
+      if (r.gone) {
+        if (!p.gone) Composite.remove(engine.world, b);
+        p.gone = true;
+        return;
+      }
+      if (p.gone) { Composite.add(engine.world, b); p.gone = false; }
+      if (b.isStatic !== r.stat) Body.setStatic(b, r.stat);
+      Body.setPosition(b, { x: r.x, y: r.y });
+      Body.setAngle(b, r.a);
+      if (!r.stat) { Body.setVelocity(b, { x: r.vx, y: r.vy }); Body.setAngularVelocity(b, r.w); }
+      b.collisionFilter.category = r.cat;
+      b.collisionFilter.mask = r.mask;
+      if (r.pin && p.screws.length === 1) pin(p, r.pin, holeWorld(p, p.screws[0].hole));
+      p.nudge = r.nudge ? { ...r.nudge } : null;
+    });
+    hist.length = k;
+    updateTop();
+    planks.forEach(p => { p.vis = visible(p) ? 1 : 0; p.cvis = known(p) ? 1 : 0; });
+    updateHud();
+  }
+  // 戻る先: 見積もりの上で解ける手順が残っている一番新しい局面。0 手目(最初)は生成のときに解けると確かめてあり、
+  // 今の局面は詰んでいるので解けないとみなす。解けるかは手数についてほぼ単調なので二分探索する。
+  // 見積もりは安全側なので、戻る先は「確実に解ける局面」で、本当の分かれ目より手前になることがある
+  async function rewindPoint(id) {
+    const moves = hist.map(h => h.i);
+    let lo = 0, hi = moves.length;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      await new Promise(r => setTimeout(r, 0));    // 1回ずつ画面に返す
+      if (id !== boardId) return null;
+      if (solveFull(level.plates, level.list, level.queue, level.model, SOLVE_BUDGET, moves.slice(0, mid))) lo = mid; else hi = mid;
+    }
+    return lo;
+  }
+  async function rewind() {
+    const btn = document.getElementById('mUndo'), id = boardId;
+    btn.disabled = true;
+    btn.textContent = '戻る先を探しています…';
+    await new Promise(r => setTimeout(r, 30));
+    const k = await rewindPoint(id);
+    btn.disabled = false;
+    if (k === null || id !== boardId) return;
+    const back = hist.length - k, fork = screws[hist[k].i];
+    rewindTo(k);
+    hint = { s: fork, t: 4 };
+    toast(k ? `${back}手戻した。赤い輪のねじを外したのが分かれ目` : '最初まで戻した。赤い輪のねじを外したのが分かれ目');
+  }
+  let toastTimer = null;
+  function toast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, 4500);
   }
 
   // ---- 入力 ----
@@ -1579,6 +1724,7 @@
   });
   const $ = id => document.getElementById(id);
   $('retry').addEventListener('click', restart);
+  $('mUndo').addEventListener('click', rewind);
   $('mBtn').addEventListener('click', () => {
     const won = $('mBtn').dataset.won === '1';
     if (!won) restart();
@@ -1661,8 +1807,13 @@
         ? (rand ? `ランダム（${DIFFS[cur.diff].name}）#${cur.seed} の板を全部落とした` : `ステージ ${cur.lv} の板を全部落とした`)
         : '待機スロットが埋まって、入れられるねじが無い';
       document.getElementById('mBack').hidden = !rand;
+      const undo = document.getElementById('mUndo');     // 詰みのときは、解ける所まで戻れる
+      undo.hidden = won || !hist.length;
+      undo.disabled = false;
+      undo.textContent = '解ける所まで戻る';
       const btn = document.getElementById('mBtn');
-      btn.textContent = won ? (rand ? '次のランダムへ' : '次のステージへ') : 'もう一回';
+      btn.className = won || !hist.length ? 'gobtn' : 'subbtn';
+      btn.textContent = won ? (rand ? '次のランダムへ' : '次のステージへ') : '最初から';
       btn.dataset.won = won ? '1' : '0';
       document.getElementById('modal').hidden = false;
     }, won ? 700 : 350);
@@ -1678,6 +1829,9 @@
     }
     for (const s of screws) {
       if (s.shake > 0) s.shake = Math.max(0, s.shake - dt);
+    }
+    if (hint && ((hint.t -= dt) <= 0 || hint.s.state !== 'board')) hint = null;
+    for (const s of screws) {
       if (s.state === 'fly') {
         s.t += dt / FLY;
         if (s.t >= 1) { s.t = 1; arrive(s); }
@@ -1845,6 +1999,13 @@
         }
       }
       ctx.restore();
+    }
+
+    // 戻したあと、分かれ目になった手のねじに赤い輪
+    if (hint && hint.s.plank.vis > 0.5) {
+      const w = holeWorld(hint.s.plank, hint.s.hole), k = 0.5 + 0.5 * Math.sin(hint.t * 9);
+      ctx.beginPath(); ctx.arc(w.x, w.y, SR + 5 + 2 * k, 0, TAU);
+      ctx.lineWidth = 4; ctx.strokeStyle = `rgba(255,56,56,${0.55 + 0.45 * k})`; ctx.stroke();
     }
 
     // 飛んでいるねじ
