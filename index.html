@@ -105,15 +105,15 @@
   }
   canvas { display: block; touch-action: none; }
   #tSub { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; }
-  #modal, #pick {
+  #modal, #pick, #settings {
     position: absolute;
     inset: 0;
     display: grid;
     place-items: center;
     background: rgba(35, 14, 2, 0.55);
   }
-  #modal[hidden], #pick[hidden] { display: none; }
-  #modal .card, #pick .card {
+  #modal[hidden], #pick[hidden], #settings[hidden] { display: none; }
+  #modal .card, #pick .card, #settings .card {
     background: linear-gradient(#e2a563, #c47f3e);
     border: 4px solid var(--wood-edge);
     border-radius: 22px;
@@ -188,8 +188,26 @@
   .pickbtn small { font-size: 12px; font-weight: 700; text-shadow: none; color: #fff4dc; }
   .pickbtn.on { background: linear-gradient(#78e063, var(--go)); border-color: var(--go-deep); box-shadow: 0 4px 0 var(--go-deep); }
   .pickbtn:active, .subbtn:active { transform: translateY(3px); }
+  /* 設定(歯車は盤面の右上。見出しの帯には3つ目のボタンを置く幅が無い) */
+  #gear { position: absolute; top: 2px; right: 0; width: 36px; height: 36px; }
+  #gear svg { width: 20px; height: 20px; }
+  .setLabel { margin: 0; font-weight: 800; font-size: 15px; color: var(--ink-edge); text-align: left; }
+  /* 紙吹雪を重ねる透明なキャンバス。クリア画面の上にも降らせる */
+  #fx { position: absolute; inset: 0; pointer-events: none; }
+  /* クリアの文字は弾んで出る。コインは光る */
+  #mTitle.pop { animation: titlePop 0.62s cubic-bezier(.2, 1.6, .4, 1) both; }
+  #mTitle.popSoft { animation: titlePopSoft 0.45s ease-out both; }
+  @keyframes titlePop { 0% { transform: scale(0.2) rotate(-8deg); opacity: 0; } 60% { transform: scale(1.22) rotate(3deg); opacity: 1; } 100% { transform: none; } }
+  @keyframes titlePopSoft { 0% { transform: scale(0.7); opacity: 0; } 100% { transform: none; opacity: 1; } }
+  .coin.glow { animation: coinGlow 1.6s ease-in-out; }
+  @keyframes coinGlow {
+    0%, 100% { transform: none; filter: none; }
+    20%, 60% { transform: scale(1.35); filter: brightness(1.35) drop-shadow(0 0 8px #ffe27a); }
+    40%, 80% { transform: scale(1.1); filter: brightness(1.1) drop-shadow(0 0 3px #ffe27a); }
+  }
   @media (prefers-reduced-motion: reduce) {
     .woodbtn:active, .gobtn:active, .pickbtn:active, .subbtn:active { transform: none; }
+    #mTitle.pop, #mTitle.popSoft, .coin.glow { animation: none; }
   }
 </style>
 
@@ -217,6 +235,12 @@
   <div id="stage">
     <canvas id="cv"></canvas>
     <div id="toast" hidden></div>
+    <button id="gear" class="woodbtn" type="button" aria-label="設定">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 2.8l1.6 2.4 2.8-.8.6 2.8 2.8.6-.8 2.8 2.4 1.6-2.4 1.6.8 2.8-2.8.6-.6 2.8-2.8-.8L12 21.2l-1.6-2.4-2.8.8-.6-2.8-2.8-.6.8-2.8L2.6 12l2.4-1.6-.8-2.8 2.8-.6.6-2.8 2.8.8z" fill="none" stroke="#fff8ea" stroke-width="2" stroke-linejoin="round"/>
+        <circle cx="12" cy="12" r="3.2" fill="none" stroke="#fff8ea" stroke-width="2.4"/>
+      </svg>
+    </button>
     <div id="modal" hidden>
       <div class="card">
         <p id="mTitle" class="outlined"></p>
@@ -224,6 +248,15 @@
         <button id="mUndo" class="gobtn" type="button" hidden>解ける所まで戻る</button>
         <button id="mBtn" class="gobtn" type="button"></button>
         <button id="mBack" class="subbtn" type="button" hidden>ステージに戻る</button>
+      </div>
+    </div>
+    <div id="settings" hidden>
+      <div class="card">
+        <p class="pickHead outlined">設定</p>
+        <p class="setLabel">演出（音と振動もこれに合わせる）</p>
+        <button class="pickbtn fxbtn" type="button" data-fx="low">控えめ<small>紙吹雪少なめ・音と振動は小さめ</small></button>
+        <button class="pickbtn fxbtn" type="button" data-fx="high">派手め<small>クラッカー2発と光・音と振動は大きめ</small></button>
+        <button id="setClose" class="subbtn" type="button">とじる</button>
       </div>
     </div>
     <div id="pick" hidden>
@@ -237,6 +270,7 @@
         <button id="pickClose" class="subbtn" type="button">とじる</button>
       </div>
     </div>
+    <canvas id="fx"></canvas>
   </div>
 </div>
 
@@ -1394,6 +1428,7 @@
     const data = genLevel(lv, seed);
     level = { plates: data.plates, list: data.screws, queue: data.queue.slice(), model: data.model };
     hist = [];
+    clearFx();
     hint = null;
     boardId++;
 
@@ -1440,7 +1475,19 @@
   }
   const ease = t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
   function boxY(b) {
-    return BOX_Y - (1 - ease(b.enter)) * 120 - ease(b.leave) * 120;
+    return BOX_Y - (1 - ease(b.enter)) * 120;
+  }
+  // 満杯になった箱の去り方: leave が 0→LID でフタが上から落ちて閉まり、LID→1 で箱ごと外側の上へ回りながら飛んでいく
+  const LID = 0.4;
+  const leaveTime = () => loud() ? 0.6 : 0.45;
+  function boxLeave(b) {
+    const lid = Math.min(1, b.leave / LID), fly = Math.max(0, (b.leave - LID) / (1 - LID));
+    const bounce = lid < 0.75 ? (lid / 0.75) ** 2 : 1 - Math.sin((lid - 0.75) / 0.25 * Math.PI) * 0.12;
+    const side = b.idx < (ACTIVE - 1) / 2 ? -1 : 1;
+    return {
+      lidY: -(1 - bounce) * 50, lidA: Math.min(1, lid * 3),
+      dx: side * fly * fly * 70, dy: -fly * fly * 190, rot: side * fly * 0.5, alpha: 1 - fly ** 3,
+    };
   }
   function destPos(d) {
     if (d.kind === 'box') return { x: boxX(d.box.idx) + SLOT[d.slot][0], y: boxY(d.box) + SLOT[d.slot][1] };
@@ -1599,7 +1646,7 @@
     s.from = from;
     updateHud();
     click();
-    try { navigator.vibrate && navigator.vibrate(12); } catch (e) {}
+    vibe(12, 5);
   }
 
   // ---- 戻る ----
@@ -1632,6 +1679,7 @@
   // k 手目を外す直前へ戻す。ねじと箱は最初の並びから k 手を動きなしで入れ直し、板は記録した状態に置き直す
   function rewindTo(k) {
     clearTimeout(finishTimer);
+    clearFx();
     ended = false; stuckT = 0; flashBuf = 0;
     document.getElementById('modal').hidden = true;
     quiet = true;
@@ -1733,7 +1781,7 @@
   });
   $('mBack').addEventListener('click', () => loadLevel(stageLv));
   // サイコロ: 難しさを選んでランダムな盤面へ
-  const pickBtns = [...document.querySelectorAll('.pickbtn')];
+  const pickBtns = [...document.querySelectorAll('.pickbtn[data-diff]')];
   pickBtns.forEach(b => {
     const d = DIFFS[+b.dataset.diff];
     b.querySelector('small').textContent = `${colorsFor(d.lv)}色・${tierGoal(d.lv)}段` + (d.lv >= 5 ? '・先読みが要る' : '');
@@ -1750,27 +1798,88 @@
   });
   $('pickBack').addEventListener('click', () => { $('pick').hidden = true; loadLevel(stageLv); });
   $('pickClose').addEventListener('click', () => { $('pick').hidden = true; });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') $('pick').hidden = true; });
+  // 設定: 演出の強さ。選んだら、その強さで音と振動を1回鳴らして違いが分かるようにする
+  const fxBtns = [...document.querySelectorAll('.fxbtn')];
+  const showFx = () => fxBtns.forEach(b => b.classList.toggle('on', b.dataset.fx === fxLevel));
+  fxBtns.forEach(b => b.addEventListener('click', () => {
+    fxLevel = b.dataset.fx;
+    try { localStorage.setItem('screw-fx', fxLevel); } catch (e) {}
+    showFx();
+    chime();
+    vibe([20, 40, 20], 8);
+  }));
+  $('gear').addEventListener('click', () => { showFx(); $('settings').hidden = false; });
+  $('setClose').addEventListener('click', () => { $('settings').hidden = true; });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { $('pick').hidden = true; $('settings').hidden = true; } });
+
+  // ---- 演出の強さ(設定) ----
+  // 'high' = 派手め、'low' = 控えめ。音の大きさ、振動の長さ、クリアの演出がこれに従う。動きを減らす設定の端末では控えめ扱い
+  let fxLevel = 'high';
+  try { if (localStorage.getItem('screw-fx') === 'low') fxLevel = 'low'; } catch (e) {}
+  const reduceMotion = (() => { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } })();
+  const loud = () => fxLevel === 'high' && !reduceMotion;
+  function vibe(high, low) {                // 振動(派手め / 控えめ のパターン)
+    try { navigator.vibrate && navigator.vibrate(loud() ? high : low); } catch (e) {}
+  }
 
   // ---- 音 ----
+  // どれもその場で合成する(音声ファイルは使わない)。音量は演出の強さで変える
   let actx = null;
-  function tone(f, d, type, vol, slide) {
+  const audio = () => {
+    try { if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)(); return actx; } catch (e) { return null; }
+  };
+  const vol = v => v * (loud() ? 1 : 0.45);
+  function tone(f, d, type, v, slide, at = 0) {
+    const A = audio();
+    if (!A) return;
     try {
-      if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
-      const t0 = actx.currentTime;
-      const o = actx.createOscillator(), g = actx.createGain();
+      const t0 = A.currentTime + at;
+      const o = A.createOscillator(), g = A.createGain();
       o.type = type;
       o.frequency.setValueAtTime(f, t0);
       o.frequency.exponentialRampToValueAtTime(f * slide, t0 + d);
-      g.gain.setValueAtTime(vol, t0);
+      g.gain.setValueAtTime(vol(v), t0);
       g.gain.exponentialRampToValueAtTime(0.001, t0 + d);
-      o.connect(g).connect(actx.destination);
+      o.connect(g).connect(A.destination);
       o.start(t0); o.stop(t0 + d);
+    } catch (e) {}
+  }
+  // ざっという音(白色雑音を帯域で絞る)。f0 から f1 へ帯域を動かす
+  let noiseBuf = null;
+  function noise(d, f0, f1, v, at = 0) {
+    const A = audio();
+    if (!A) return;
+    try {
+      if (!noiseBuf) {
+        noiseBuf = A.createBuffer(1, A.sampleRate, A.sampleRate);
+        const ch = noiseBuf.getChannelData(0);
+        for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+      }
+      const t0 = A.currentTime + at;
+      const src = A.createBufferSource(), bp = A.createBiquadFilter(), g = A.createGain();
+      src.buffer = noiseBuf;
+      bp.type = 'bandpass'; bp.Q.value = 1.2;
+      bp.frequency.setValueAtTime(f0, t0);
+      bp.frequency.exponentialRampToValueAtTime(f1, t0 + d);
+      g.gain.setValueAtTime(vol(v), t0);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + d);
+      src.connect(bp).connect(g).connect(A.destination);
+      src.start(t0); src.stop(t0 + d);
     } catch (e) {}
   }
   const click = () => tone(620, 0.07, 'triangle', 0.18, 1.8);
   const buzz = () => tone(140, 0.12, 'square', 0.06, 0.8);
-  const chime = () => { tone(880, 0.12, 'sine', 0.14, 1.0); setTimeout(() => tone(1320, 0.16, 'sine', 0.12, 1.0), 90); };
+  const chime = () => { tone(880, 0.12, 'sine', 0.14, 1.0); tone(1320, 0.16, 'sine', 0.12, 1.0, 0.09); };
+  const lidClack = () => tone(980, 0.05, 'square', 0.07, 0.6);          // 箱のフタが閉まる
+  const whoosh = () => noise(0.3, 500, 2400, 0.22);                      // 箱が飛んでいく
+  const popSound = () => { noise(0.16, 2600, 900, 0.9); tone(150, 0.14, 'sine', 0.5, 0.45); };   // クラッカー
+  function fanfare() {                           // 上がっていく4音。派手めは和音とキラキラを重ねる
+    const N = [523.25, 659.25, 783.99, 1046.5];
+    N.forEach((f, i) => tone(f, 0.26, 'triangle', 0.2, 1.0, i * 0.11));
+    if (!loud()) return;
+    N.forEach(f => tone(f, 1.1, 'sine', 0.07, 1.0, 0.5));
+    for (let k = 0; k < 9; k++) tone(1800 + Math.random() * 1600, 0.07, 'sine', 0.06, 1.3, 0.45 + Math.random() * 1.0);
+  }
 
   // ---- 進行 ----
   function idle() {
@@ -1800,9 +1909,14 @@
   function finish(won) {
     ended = true;
     clearTimeout(finishTimer);
+    if (won) celebrate();                         // クラッカーが弾けてから、クリアの画面を出す
     finishTimer = setTimeout(() => {
       const rand = cur.mode === 'random';
-      document.getElementById('mTitle').textContent = won ? 'クリア' : '詰み';
+      const title = document.getElementById('mTitle');
+      title.textContent = won ? 'クリア' : '詰み';
+      title.classList.remove('pop', 'popSoft');
+      void title.offsetWidth;                     // 付け直してアニメーションを最初から
+      if (won) title.classList.add(loud() ? 'pop' : 'popSoft');
       document.getElementById('mSub').textContent = won
         ? (rand ? `ランダム（${DIFFS[cur.diff].name}）#${cur.seed} の板を全部落とした` : `ステージ ${cur.lv} の板を全部落とした`)
         : '待機スロットが埋まって、入れられるねじが無い';
@@ -1816,7 +1930,7 @@
       btn.textContent = won ? (rand ? '次のランダムへ' : '次のステージへ') : '最初から';
       btn.dataset.won = won ? '1' : '0';
       document.getElementById('modal').hidden = false;
-    }, won ? 700 : 350);
+    }, won ? (loud() ? 1000 : 800) : 350);
   }
 
   function update(dt) {
@@ -1842,7 +1956,14 @@
       if (!b) continue;
       if (b.enter < 1) b.enter = Math.min(1, b.enter + dt / 0.3);
       if (b.leaving) {
-        b.leave += dt / 0.35;
+        const was = b.leave;
+        b.leave += dt / leaveTime();
+        if (was < LID && b.leave >= LID) {     // フタが閉まった
+          lidClack();
+          vibe(15, 0);
+          if (loud()) sparkle(boxX(i), BOX_Y - 10);
+        }
+        if (was < LID + 0.05 && b.leave >= LID + 0.05 && loud()) whoosh();
         if (b.leave >= 1) {
           b.items.forEach(s => { s.state = 'done'; });
           spawnBox(i);
@@ -1928,6 +2049,18 @@
       ctx.beginPath(); ctx.arc(x + ox, y + oy + 1.5, 10.5, 0, TAU); ctx.fillStyle = '#c6c4ce'; ctx.fill();
     }
   }
+  // 箱のフタ: 箱の色の板に白いチェック
+  function drawLid(x, y, ci, a) {
+    const C = COLORS[ci];
+    ctx.save();
+    ctx.globalAlpha = a;
+    rr(x - 47, y - 31, 94, 66, 14); ctx.fillStyle = C.d; ctx.fill();
+    rr(x - 47, y - 34, 94, 66, 14); ctx.fillStyle = C.m; ctx.fill();
+    rr(x - 42, y - 30, 84, 16, 8); ctx.fillStyle = 'rgba(255,255,255,0.28)'; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x - 15, y + 1); ctx.lineTo(x - 4, y + 12); ctx.lineTo(x + 17, y - 11);
+    ctx.lineWidth = 7; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#ffffff'; ctx.stroke();
+    ctx.restore();
+  }
   function drawPlate(p) {
     const { x, y } = p.body.position, a = p.body.angle, A = ctx.globalAlpha;
     ctx.save();                                   // 影(常に真下へずらす)
@@ -1959,11 +2092,13 @@
         ctx.setLineDash([]);
         continue;
       }
-      const y = boxY(b);
+      const y = boxY(b), L = b.leaving ? boxLeave(b) : null;
       ctx.save();
-      ctx.globalAlpha = 1 - ease(b.leave);
-      drawBox(x, y, b.color);
-      for (const s of b.items) if (s.state === 'box') drawScrew(x + SLOT[s.dest.slot][0], y + SLOT[s.dest.slot][1], s.color, s.rot, 0.96);
+      ctx.translate(x + (L ? L.dx : 0), y + (L ? L.dy : 0));
+      if (L) { ctx.rotate(L.rot); ctx.globalAlpha = L.alpha; }
+      drawBox(0, 0, b.color);
+      for (const s of b.items) if (s.state === 'box') drawScrew(SLOT[s.dest.slot][0], SLOT[s.dest.slot][1], s.color, s.rot, 0.96);
+      if (L) drawLid(0, L.lidY, b.color, L.lidA * L.alpha);
       ctx.restore();
     }
 
@@ -2016,6 +2151,132 @@
     }
   }
 
+  // ---- 紙吹雪とクラッカー ----
+  // 盤面の上に重ねた透明なキャンバス(#fx)に描く。座標は #stage の CSS ピクセル。クリアの画面の上にも降る
+  const fxc = document.getElementById('fx'), fxx = fxc.getContext('2d');
+  let parts = [], poppers = [], flash = 0, fxW = 0, fxH = 0, fxDirty = false, celebTimers = [];
+  function fitFx() {
+    fxW = stage.clientWidth; fxH = stage.clientHeight;
+    fxc.width = Math.round(fxW * dpr); fxc.height = Math.round(fxH * dpr);
+    fxc.style.width = fxW + 'px'; fxc.style.height = fxH + 'px';
+    fxx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  // 盤面の座標を #stage の CSS ピクセルへ
+  const toStage = (x, y) => ({ x: cv.offsetLeft + x * scale, y: cv.offsetTop + y * scale });
+  function clearFx() {
+    celebTimers.forEach(clearTimeout); celebTimers = [];
+    parts = []; poppers = []; flash = 0; fxDirty = true;
+    document.querySelector('#prog .coin').classList.remove('glow');
+  }
+  // 箱のフタが閉まったときの小さな星
+  function sparkle(x, y) {
+    const c = toStage(x, y);
+    for (let k = 0; k < 9; k++) {
+      const a = Math.random() * TAU, v = 60 + Math.random() * 110;
+      parts.push({ kind: 'star', x: c.x + Math.cos(a) * 20, y: c.y + Math.sin(a) * 12, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 40,
+        rot: Math.random() * TAU, vr: 4, size: 4 + Math.random() * 4, c: '#fff4c2', t: 0, life: 0.55 + Math.random() * 0.25, g: 0 });
+    }
+  }
+  // 紙吹雪を n 枚。(x, y) から向き ang のまわりへ吹き出す
+  function burst(x, y, ang, n, colors) {
+    const sp = Math.min(fxW, fxH);
+    for (let k = 0; k < n; k++) {
+      const a = ang + (Math.random() - 0.5) * 0.8, v = sp * (1.9 + Math.random() * 1.3);
+      const round = Math.random() < 0.25;
+      parts.push({ kind: round ? 'dot' : 'paper', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v,
+        rot: Math.random() * TAU, vr: (Math.random() - 0.5) * 14, flip: Math.random() * TAU, ph: Math.random() * TAU,
+        w: 6 + Math.random() * 5, h: 9 + Math.random() * 7, c: colors[k % colors.length], t: 0, life: 7, g: 1 });
+    }
+  }
+  // クリアの演出: 下の両隅にクラッカーが出て、弾けて紙吹雪。派手めは2発を時差で弾き、画面が一瞬光る。上のコインが光り、ファンファーレ
+  function celebrate() {
+    clearFx();
+    const colors = [...new Set(level.queue)].map(c => COLORS[c].c).concat(['#ffe27a', '#ffffff']);
+    const big = loud(), y = fxH - 34, n = big ? 85 : 32;
+    poppers = [
+      { x: 30, y, ang: -Math.PI * 0.38, t: 0, at: 0.38, popped: false, n },
+      { x: fxW - 30, y, ang: -Math.PI * 0.62, t: 0, at: big ? 0.56 : 0.38, popped: false, n },
+    ];
+    poppers.forEach(p => { p.onPop = () => {
+      burst(p.x + Math.cos(p.ang) * 34, p.y + Math.sin(p.ang) * 34, p.ang, p.n, colors);
+      popSound();
+      if (big) flash = 0.4;
+    }; });
+    celebTimers.push(setTimeout(() => {
+      document.querySelector('#prog .coin').classList.add('glow');
+      fanfare();
+      vibe([30, 40, 30, 40, 160], 25);
+    }, 380));
+    if (big) celebTimers.push(setTimeout(() => {   // あとから上からもひと降り
+      for (let k = 0; k < 50; k++) parts.push({ kind: 'paper', x: Math.random() * fxW, y: -20 - Math.random() * 120, vx: (Math.random() - 0.5) * 60, vy: 40 + Math.random() * 80,
+        rot: Math.random() * TAU, vr: (Math.random() - 0.5) * 10, flip: Math.random() * TAU, ph: Math.random() * TAU,
+        w: 6 + Math.random() * 5, h: 9 + Math.random() * 7, c: colors[k % colors.length], t: 0, life: 7, g: 0.35 });
+    }, 1100));
+  }
+  function updateFx(dt) {
+    for (const p of poppers) {
+      p.t += dt;
+      if (!p.popped && p.t >= p.at) { p.popped = true; p.onPop(); }
+    }
+    poppers = poppers.filter(p => p.t < p.at + 1.2);
+    if (flash > 0) flash = Math.max(0, flash - dt * 1.6);
+    for (const q of parts) {
+      q.t += dt;
+      if (q.kind === 'star') { q.x += q.vx * dt; q.y += q.vy * dt; q.vx *= 1 - 3 * dt; q.vy *= 1 - 3 * dt; q.rot += q.vr * dt; continue; }
+      q.vy += 900 * q.g * dt;
+      q.vx *= 1 - 1.6 * dt; q.vy *= 1 - (q.vy > 0 ? 3.2 : 0.8) * dt;   // 落ちるときは空気で遅くなる(ひらひら)
+      q.vx += Math.sin(q.t * 5 + q.ph) * 90 * dt;
+      q.x += q.vx * dt; q.y += q.vy * dt; q.rot += q.vr * dt; q.flip += 7 * dt;
+    }
+    parts = parts.filter(q => q.t < q.life && q.y < fxH + 30);
+  }
+  function drawPopper(p) {
+    const k = Math.min(1, p.t / 0.18), after = p.t - p.at;
+    const recoil = after > 0 ? Math.exp(-after * 12) * 10 : Math.sin(p.t * 40) * 1.5 * k;
+    const fade = after > 0.6 ? Math.max(0, 1 - (after - 0.6) / 0.6) : 1;
+    fxx.save();
+    fxx.globalAlpha = fade;
+    fxx.translate(p.x - Math.cos(p.ang) * recoil, p.y - Math.sin(p.ang) * recoil);
+    fxx.rotate(p.ang + Math.PI / 2);
+    fxx.scale(k * (after > 0 && after < 0.1 ? 1.15 : 1), k);
+    // 円すい(口が上)。金と赤の縞
+    fxx.beginPath(); fxx.moveTo(0, 26); fxx.lineTo(-18, -30); fxx.lineTo(18, -30); fxx.closePath();
+    fxx.fillStyle = '#ffcf3a'; fxx.fill();
+    fxx.save(); fxx.clip();
+    fxx.fillStyle = '#e8413c';
+    for (let yy = -30; yy < 30; yy += 14) { fxx.beginPath(); fxx.moveTo(-20, yy); fxx.lineTo(20, yy - 8); fxx.lineTo(20, yy - 2); fxx.lineTo(-20, yy + 6); fxx.fill(); }
+    fxx.restore();
+    fxx.lineWidth = 2.5; fxx.strokeStyle = '#7a3a06'; fxx.stroke();
+    fxx.beginPath(); fxx.ellipse(0, -30, 18, 5, 0, 0, TAU); fxx.fillStyle = '#fff4d0'; fxx.fill(); fxx.stroke();
+    fxx.restore();
+  }
+  function drawFx() {
+    if (!parts.length && !poppers.length && flash <= 0) {
+      if (fxDirty) { fxx.clearRect(0, 0, fxW, fxH); fxDirty = false; }
+      return;
+    }
+    fxDirty = true;
+    fxx.clearRect(0, 0, fxW, fxH);
+    if (flash > 0) { fxx.fillStyle = `rgba(255,250,230,${flash})`; fxx.fillRect(0, 0, fxW, fxH); }
+    for (const p of poppers) drawPopper(p);
+    for (const q of parts) {
+      const a = q.kind === 'star' ? 1 - q.t / q.life : Math.min(1, (q.life - q.t) / 0.6);
+      fxx.save();
+      fxx.globalAlpha = Math.max(0, a);
+      fxx.translate(q.x, q.y); fxx.rotate(q.rot);
+      fxx.fillStyle = q.c;
+      if (q.kind === 'paper') { fxx.scale(Math.cos(q.flip), 1); fxx.fillRect(-q.w / 2, -q.h / 2, q.w, q.h); }
+      else if (q.kind === 'dot') { fxx.beginPath(); fxx.arc(0, 0, q.w / 2, 0, TAU); fxx.fill(); }
+      else {                                        // 4つ角の星
+        const r = q.size;
+        fxx.beginPath();
+        for (let i = 0; i < 8; i++) { const rr2 = i % 2 ? r * 0.35 : r, an = i * Math.PI / 4; fxx.lineTo(Math.cos(an) * rr2, Math.sin(an) * rr2); }
+        fxx.closePath(); fxx.fill();
+      }
+      fxx.restore();
+    }
+  }
+
   // ---- 背景の木目 ----
   function paintWood() {
     const w = 480, h = 860;
@@ -2055,6 +2316,7 @@
     cv.width = Math.round(W * scale * dpr);
     cv.height = Math.round(H * scale * dpr);
     ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
+    fitFx();
   }
   window.addEventListener('resize', fit);
 
@@ -2067,7 +2329,9 @@
     acc += dt;
     while (acc >= STEP) { nudgeStep(); Engine.update(engine, STEP); acc -= STEP; }
     update(dt / 1000);
+    updateFx(dt / 1000);
     draw();
+    drawFx();
     requestAnimationFrame(frame);
   }
 
