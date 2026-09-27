@@ -1,0 +1,18 @@
+{
+  "name": "screw-puzzle",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ネジ外し工房: ねじ外しパズルの Android 版(Capacitor で index.html を包む)",
+  "scripts": {
+    "app:web": "bash scripts/build_app.sh",
+    "app:apk": "bash scripts/build_app.sh && cd android && ./gradlew assembleDebug"
+  },
+  "devDependencies": {
+    "@capacitor/android": "8.5.2",
+    "@capacitor/cli": "8.5.2",
+    "@capacitor/core": "8.5.2",
+    "@fontsource/m-plus-rounded-1c": "5.3.0",
+    "matter-js": "0.19.0",
+    "poly-decomp": "0.3.0"
+  }
+}
