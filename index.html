@@ -274,7 +274,7 @@
   COLORS.forEach(C => { C.l = mix(C.c, '#ffffff', 0.45); C.m = mix(C.c, C.d, 0.5); });
 
   // ---- 状態 ----
-  let engine, planks, screws, boxes, buffer, queue, level, ended, flashBuf;
+  let engine, planks, screws, boxes, buffer, queue, ended, flashBuf;
   let stuckT = 0;          // 詰みの状態が続いている秒数
   const STUCK_HOLD = 0.8;
   let genStats = null;   // 直近の盤面生成で、色の割り当てを何回やり直したか(確認用)
@@ -999,7 +999,6 @@
 
   function build(lv, seed) {
     clearTimeout(finishTimer);
-    level = lv;
     ended = false;
     flashBuf = 0;
     stuckT = 0;
