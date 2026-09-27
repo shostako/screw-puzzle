@@ -177,6 +177,8 @@
   const ACTIVE = 2;       // 同時に出る箱の数
   const BUF = 5;          // 待機スロット数
   const FLY = 0.38;       // ねじが飛ぶ時間(秒)
+  const NUDGE_W = 0.004;  // 倒立の釣り合いから押し出すときの最低回転速度(rad/ステップ、約0.24rad/秒)
+  const NUDGE_ANGLE = 0.3;  // この角度だけ傾いたら押すのをやめ、あとは重力に任せる(rad)
   const BOARD = { x0: 8, x1: 392, y0: 164, y1: 710 };   // 板を置いてよい範囲
   const DENSITY = 0.001, INERTIA_SCALE = 4;              // Matter.js の既定値(密度、慣性モーメントの倍率)に合わせる
 
@@ -657,7 +659,7 @@
       Body.setInertia(body, g.inertia * DENSITY * INERTIA_SCALE);
       Body.setStatic(body, true);
       Composite.add(engine.world, body);
-      return { body, layer: li, tint: pl.tint, path: g.path, holes: g.holes, f: g.f, rad: g.rad, screws: [], constraint: null, gone: false };
+      return { body, layer: li, tint: pl.tint, path: g.path, holes: g.holes, f: g.f, rad: g.rad, screws: [], constraint: null, nudge: null, gone: false };
     });
 
     screws = data.screws.map(s => {
@@ -766,6 +768,7 @@
   function detach(s) {
     const p = s.plank;
     p.screws = p.screws.filter(x => x !== s);
+    p.nudge = null;
     if (p.constraint) { Composite.remove(engine.world, p.constraint); p.constraint = null; }
     if (p.screws.length === 1) {
       const r = p.screws[0];
@@ -778,8 +781,26 @@
         length: 0, stiffness: 0.9, damping: 0.05,
       });
       Composite.add(engine.world, p.constraint);
+      // 重心が残ったねじのほぼ真上にある(倒立の釣り合い)と、物理的には倒れるはずでも静止したままになる。
+      // 左右どちらかへゆっくり押し出して、ひっくり返らせる。重心が少しでもずれていればその向きへ
+      const dx = p.body.position.x - w.x, dy = p.body.position.y - w.y, d = len(dx, dy);
+      if (d > 5 && dy < 0 && Math.abs(dx) < 0.25 * d) {
+        const dir = Math.abs(dx) > 1 ? Math.sign(dx) : (Math.random() < 0.5 ? -1 : 1);
+        p.nudge = { dir, a0: p.body.angle, t: 0 };
+      }
     } else if (p.screws.length === 0) {
       Body.setStatic(p.body, false);
+    }
+  }
+
+  // 物理1ステップごとに、押し出し中の板の回転速度を下支えする
+  function nudgeStep() {
+    for (const p of planks) {
+      const n = p.nudge;
+      if (!n) continue;
+      n.t += STEP;
+      if (Math.abs(p.body.angle - n.a0) > NUDGE_ANGLE || n.t > 4000) { p.nudge = null; continue; }
+      if (n.dir * p.body.angularVelocity < NUDGE_W) Body.setAngularVelocity(p.body, n.dir * NUDGE_W);
     }
   }
 
@@ -1074,7 +1095,7 @@
     let dt = now - last; last = now;
     if (dt > 100) dt = 100;
     acc += dt;
-    while (acc >= STEP) { Engine.update(engine, STEP); acc -= STEP; }
+    while (acc >= STEP) { nudgeStep(); Engine.update(engine, STEP); acc -= STEP; }
     update(dt / 1000);
     draw();
     requestAnimationFrame(frame);
