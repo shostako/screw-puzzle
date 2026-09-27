@@ -462,11 +462,9 @@
     return true;
   }
 
-  function genLevel(lv) {
-    const rnd = mulberry32(lv * 7919 + 13);
-    const target = Math.min(15 + 3 * lv, 36);
+  // 板を置いていき、ねじの総数を3の倍数にそろえる
+  function placePlates(lv, rnd, target) {
     const maxCover = Math.min(3 + Math.floor(lv / 3), 6);
-    const nColors = Math.min(3 + Math.floor((lv - 1) / 2), 6);
     const plates = [];
     let S = 0, fails = 0;
     while (S < target && plates.length < 14 && fails < 80) {
@@ -489,8 +487,27 @@
       let best = null;
       for (const p of plates) if (p.sh.holes.length > 2 && (!best || p.sh.holes.length > best.sh.holes.length)) best = p;
       if (best) { best.sh.holes.pop(); best.holesW.pop(); S--; }
-      else S -= plates.pop().sh.holes.length;
+      else if (plates.length > 1) S -= plates.pop().sh.holes.length;
+      else break;
     }
+    return { plates, S };
+  }
+
+  function genLevel(lv) {
+    // 配置が早く行き詰まって目標のねじ数に届かなかったら、種を変えて作り直す(同じ番号なら同じ盤面)
+    const target = Math.min(15 + 3 * lv, 36);
+    let pick = null, last = null;
+    for (let k = 0; k < 20; k++) {
+      const rnd = mulberry32(lv * 7919 + 13 + k * 104729);
+      const g = placePlates(lv, rnd, target);
+      g.rnd = rnd;
+      last = g;
+      const ok = g.S % 3 === 0 && g.S >= 9 && g.plates.length >= 3;
+      if (ok && (!pick || g.S > pick.S)) pick = g;
+      if (pick && pick.S >= target - 3) break;
+    }
+    const { plates, S, rnd } = pick || last;
+    const nColors = Math.min(3 + Math.floor((lv - 1) / 2), 6);
 
     // 箱の順番を先に決め、上の層のねじほど早い箱の色になるよう割り当てる(詰みにくくする)
     const palette = shuffle(COLORS.map((_, i) => i), rnd).slice(0, nColors);
