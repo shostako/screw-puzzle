@@ -1953,10 +1953,10 @@
     if (cur.mode !== 'stage') return null;
     let all = {};
     try { all = JSON.parse(localStorage.getItem('screw-best') || '{}') || {}; } catch (e) {}
-    const old = all[cur.lv] || null;
-    const better = !old || r.stars > old.stars || (r.stars === old.stars && play.t < old.t);
+    const old = all[cur.lv] || null, t = Math.round(play.t * 10) / 10;   // 比べる値と残す値を同じ 0.1 秒単位にそろえる
+    const better = !old || r.stars > old.stars || (r.stars === old.stars && t < old.t);
     if (better) {
-      all[cur.lv] = { stars: r.stars, t: Math.round(play.t) };
+      all[cur.lv] = { stars: r.stars, t };
       try { localStorage.setItem('screw-best', JSON.stringify(all)); } catch (e) {}
     }
     return { old, better };
