@@ -217,6 +217,7 @@
 
   // ---- 状態 ----
   let engine, planks, screws, boxes, buffer, queue, level, ended, flashBuf;
+  let genStats = null;   // 直近の盤面生成で、色の割り当てを何回やり直したか(確認用)
 
   const cv = document.getElementById('cv');
   const ctx = cv.getContext('2d');
@@ -547,25 +548,79 @@
     plates.forEach(p => { p.tier = tbs.indexOf(p.tb); });
     const nColors = colorsFor(lv);
 
-    // 箱の順番を先に決め、上の層のねじほど早い箱の色になるよう割り当てる(詰みにくくする)
+    // 箱の順番を先に決め、上の階層のねじほど早い箱の色になるよう割り当てる。
+    // 解けるか確かめ、解けなければ割り当て直す。10回ごとに混ぜ方を弱め、最後は混ぜない(必ず解ける)
     const palette = shuffle(COLORS.map((_, i) => i), rnd).slice(0, nColors);
     const boxQueue = [];
     for (let i = 0; i < S / 3; i++) boxQueue.push(palette[i % nColors]);
     shuffle(boxQueue, rnd);
-    const L = boxQueue.flatMap(c => [c, c, c]);
-    const win = Math.min(4 + lv, 11);
-    for (let i = 0; i < L.length; i++) {
-      const j = i + Math.floor(rnd() * Math.min(win, L.length - i));
-      [L[i], L[j]] = [L[j], L[i]];
-    }
     const list = [];
-    plates.forEach((p, li) => p.sh.holes.forEach((h, hi) => list.push({ pl: li, hi, key: -p.tier + rnd() * 1.5 })));
-    list.sort((a, b) => b.key - a.key);
-    list.forEach((s, i) => { s.color = L[i]; });
+    plates.forEach((p, li) => p.sh.holes.forEach((h, hi) => list.push({ pl: li, hi, tier: p.tier })));
+    let win = Math.min(4 + lv, 11), noise = 1.5, tries = 0;
+    for (;;) {
+      assignColors(list, boxQueue, win, noise, rnd);
+      tries++;
+      if (solvable(list, boxQueue)) break;
+      if (tries % 10 === 0) { win = Math.max(1, win - 2); noise = Math.max(0, noise - 0.5); }
+    }
+    genStats = { tries, win, noise };
     const tints = shuffle(TINTS.slice(), rnd);                 // 同じ階層の板は同じ色
     plates.forEach(p => { p.tint = tints[p.tier % tints.length]; });
     return { plates, screws: list, queue: boxQueue, rnd };
   }
+
+  // 箱の色の並び(1箱3本)を窓の中で混ぜ、上の階層ほど前の色を割り当てる。noise は階層をまたぐ混ざり具合
+  function assignColors(list, queue, win, noise, rnd) {
+    const L = queue.flatMap(c => [c, c, c]);
+    for (let i = 0; i < L.length; i++) {
+      const j = i + Math.floor(rnd() * Math.min(win, L.length - i));
+      [L[i], L[j]] = [L[j], L[i]];
+    }
+    for (const s of list) s.key = -s.tier + rnd() * noise;
+    list.slice().sort((a, b) => b.key - a.key).forEach((s, i) => { s.color = L[i]; });
+  }
+
+  // ---- 解けるかの判定 ----
+  // 「最上階層のねじから順に外す」手順だけを試す。この手順で外すねじは常に最上階層にあり、
+  // 上の階層はねじ0本で板が落ちていくだけなので、板がどう揺れても隠れず、色も見えている(物理に左右されない)。
+  // 揺れている板の下を先に掘れるかどうかは揺れ方しだいの近道なので、判定には使わない。
+  // 各階層の中では、合う箱があるねじを先に入れ、無ければ次に出る箱で一番早く要る色を待機スロットへ置く。
+  // 待機スロットがあふれずに全部の箱が埋まれば解ける。実際のゲームでもこの順に外せば必ずクリアできる
+  function solveOrder(list, queue) {
+    const tiers = [];
+    list.forEach((s, i) => { (tiers[s.tier] = tiers[s.tier] || []).push(i); });
+    const q = queue.slice(), boxes = [], buf = [], order = [];
+    const spawn = () => {
+      while (boxes.length < ACTIVE && q.length) {
+        const b = { color: q.shift(), n: 0 };
+        boxes.push(b);
+        for (let i = buf.length - 1; i >= 0 && b.n < 3; i--) if (buf[i] === b.color) { buf.splice(i, 1); b.n++; }
+        if (b.n === 3) boxes.splice(boxes.indexOf(b), 1);
+      }
+    };
+    const need = c => { const i = q.indexOf(c); return i < 0 ? Infinity : i; };
+    spawn();
+    for (const rem of tiers) {
+      if (!rem) continue;
+      while (rem.length) {
+        let i = rem.findIndex(k => boxes.some(b => b.color === list[k].color));
+        if (i >= 0) {
+          const k = rem.splice(i, 1)[0], b = boxes.find(x => x.color === list[k].color);
+          order.push(k);
+          if (++b.n === 3) { boxes.splice(boxes.indexOf(b), 1); spawn(); }
+          continue;
+        }
+        if (buf.length >= BUF) return null;
+        i = 0;
+        for (let j = 1; j < rem.length; j++) if (need(list[rem[j]].color) < need(list[rem[i]].color)) i = j;
+        const k = rem.splice(i, 1)[0];
+        order.push(k);
+        buf.push(list[k].color);
+      }
+    }
+    return !boxes.length && !q.length && !buf.length ? order : null;
+  }
+  const solvable = (list, queue) => solveOrder(list, queue) !== null;
 
   // ---- 板の輪郭と質量 ----
   // 距離関数を格子で標本化し、マーチングスクエアで輪郭線を取り出す
