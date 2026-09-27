@@ -202,10 +202,20 @@
   #mStat { margin: 0; color: var(--ink-edge); font-weight: 700; font-size: 13px; line-height: 1.6; font-variant-numeric: tabular-nums; white-space: pre-line; }
   .setLabel { margin: 0; font-weight: 800; font-size: 15px; color: var(--ink-edge); text-align: left; }
   /* 紙吹雪を重ねる透明なキャンバス。クリア画面の上にも降らせる */
-  #fx { position: absolute; inset: 0; pointer-events: none; }
+  #fx { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
+  /* 派手め: クリアで盤面が揺れる */
+  #stage.shake { animation: shake 0.45s linear; }
+  @keyframes shake {
+    0%, 100% { transform: none; }
+    15% { transform: translate(-7px, 3px) rotate(-0.6deg); } 30% { transform: translate(6px, -4px) rotate(0.5deg); }
+    45% { transform: translate(-5px, -2px); } 60% { transform: translate(4px, 3px); } 80% { transform: translate(-2px, 1px); }
+  }
   /* クリアの文字は弾んで出る。コインは光る */
   #mTitle.pop { animation: titlePop 0.62s cubic-bezier(.2, 1.6, .4, 1) both; }
   #mTitle.popSoft { animation: titlePopSoft 0.45s ease-out both; }
+  #mTitle.popMega { animation: titlePopMega 0.8s cubic-bezier(.2, 1.5, .4, 1) both, titleGlow 1.2s ease-in-out 0.8s 2; }
+  @keyframes titlePopMega { 0% { transform: scale(0) rotate(-25deg); opacity: 0; } 55% { transform: scale(1.5) rotate(6deg); opacity: 1; } 75% { transform: scale(0.92) rotate(-2deg); } 100% { transform: none; } }
+  @keyframes titleGlow { 50% { filter: drop-shadow(0 0 10px #ffe27a) brightness(1.15); } }
   @keyframes titlePop { 0% { transform: scale(0.2) rotate(-8deg); opacity: 0; } 60% { transform: scale(1.22) rotate(3deg); opacity: 1; } 100% { transform: none; } }
   @keyframes titlePopSoft { 0% { transform: scale(0.7); opacity: 0; } 100% { transform: none; opacity: 1; } }
   .coin.glow { animation: coinGlow 1.6s ease-in-out; }
@@ -216,7 +226,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .woodbtn:active, .gobtn:active, .pickbtn:active, .subbtn:active { transform: none; }
-    #mTitle.pop, #mTitle.popSoft, .coin.glow, #mStars span.on { animation: none; }
+    #mTitle.pop, #mTitle.popSoft, #mTitle.popMega, .coin.glow, #mStars span.on, #stage.shake { animation: none; }
   }
 </style>
 
@@ -271,8 +281,8 @@
       <div class="card">
         <p class="pickHead outlined">設定</p>
         <p class="setLabel">演出（音と振動もこれに合わせる）</p>
-        <button class="pickbtn fxbtn" type="button" data-fx="low">控えめ<small>紙吹雪少なめ・音と振動は小さめ</small></button>
-        <button class="pickbtn fxbtn" type="button" data-fx="high">派手め<small>クラッカー2発と光・音と振動は大きめ</small></button>
+        <button class="pickbtn fxbtn" type="button" data-fx="low">控えめ<small>クラッカー2発と紙吹雪・光</small></button>
+        <button class="pickbtn fxbtn" type="button" data-fx="high">派手め<small>さらに花火・コインの雨・画面の揺れ</small></button>
         <button id="setClose" class="subbtn" type="button">とじる</button>
       </div>
     </div>
@@ -287,9 +297,10 @@
         <button id="pickClose" class="subbtn" type="button">とじる</button>
       </div>
     </div>
-    <canvas id="fx"></canvas>
   </div>
 </div>
+<!-- 紙吹雪用。揺れる #stage の外に置く(変形する親の中だと position: fixed が画面に固定されない) -->
+<canvas id="fx"></canvas>
 
 <script>
 (() => {
@@ -1499,14 +1510,16 @@
   }
   // 満杯になった箱の去り方: leave が 0→LID でフタが上から落ちて閉まり、LID→1 で箱ごと外側の上へ回りながら飛んでいく
   const LID = 0.4;
-  const leaveTime = () => loud() ? 0.6 : 0.45;
+  const leaveTime = () => mega() ? 0.7 : full() ? 0.6 : 0.45;
+  // 派手めは、フタが閉まったあと箱がひと跳ね(大きくなって戻る)してから、よく回って飛ぶ
   function boxLeave(b) {
     const lid = Math.min(1, b.leave / LID), fly = Math.max(0, (b.leave - LID) / (1 - LID));
     const bounce = lid < 0.75 ? (lid / 0.75) ** 2 : 1 - Math.sin((lid - 0.75) / 0.25 * Math.PI) * 0.12;
-    const side = b.idx < (ACTIVE - 1) / 2 ? -1 : 1;
+    const side = b.idx < (ACTIVE - 1) / 2 ? -1 : 1, big = mega();
     return {
       lidY: -(1 - bounce) * 50, lidA: Math.min(1, lid * 3),
-      dx: side * fly * fly * 70, dy: -fly * fly * 190, rot: side * fly * 0.5, alpha: 1 - fly ** 3,
+      dx: side * fly * fly * 70, dy: -fly * fly * 190, rot: side * fly * (big ? 1.4 : 0.5), alpha: 1 - fly ** 3,
+      sc: big ? 1 + 0.2 * Math.sin(Math.PI * Math.min(1, fly / 0.25)) : 1,
     };
   }
   function destPos(d) {
@@ -1687,7 +1700,7 @@
     s.from = from;
     updateHud();
     click();
-    vibe(12, 5);
+    vibe(18, 12);
   }
 
   // ---- 戻る ----
@@ -1864,29 +1877,32 @@
     try { localStorage.setItem('screw-fx', fxLevel); } catch (e) {}
     showFx();
     chime();
-    vibe([20, 40, 20], 8);
+    vibe([20, 40, 20, 40, 60], [20, 40, 20]);
   }));
   $('gear').addEventListener('click', () => { showFx(); $('settings').hidden = false; });
   $('setClose').addEventListener('click', () => { $('settings').hidden = true; });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') { $('pick').hidden = true; $('settings').hidden = true; } });
 
   // ---- 演出の強さ(設定) ----
-  // 'high' = 派手め、'low' = 控えめ。音の大きさ、振動の長さ、クリアの演出がこれに従う。動きを減らす設定の端末では控えめ扱い
+  // 'low' = 控えめ: クラッカー2発と紙吹雪、光、あとからの紙吹雪、ファンファーレに和音とキラキラ。
+  // 'high' = 派手め: さらにクラッカー4発、花火、コインの雨、リボン、画面の揺れと虹色の光、太鼓とシンバル、箱が跳ねて星の尾を引く。
+  // (2026-09-27 に組み替え: それまでの「派手め」を「控えめ」にし、その上を作った。それまでの「控えめ」は無くした)
+  // 振動もこれに従う。端末が「動きを減らす」設定なら、揺れ・光・花火は出さず、紙吹雪も少なくする
   let fxLevel = 'high';
-  try { if (localStorage.getItem('screw-fx') === 'low') fxLevel = 'low'; } catch (e) {}
+  try { const v = localStorage.getItem('screw-fx'); if (v === 'low' || v === 'high') fxLevel = v; } catch (e) {}
   const reduceMotion = (() => { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } })();
-  const loud = () => fxLevel === 'high' && !reduceMotion;
+  const full = () => !reduceMotion;                       // 控えめ以上の演出を出すか
+  const mega = () => fxLevel === 'high' && !reduceMotion;   // 派手めの演出を出すか
   function vibe(high, low) {                // 振動(派手め / 控えめ のパターン)
-    try { navigator.vibrate && navigator.vibrate(loud() ? high : low); } catch (e) {}
+    try { navigator.vibrate && navigator.vibrate(fxLevel === 'high' ? high : low); } catch (e) {}
   }
 
   // ---- 音 ----
-  // どれもその場で合成する(音声ファイルは使わない)。音量は演出の強さで変える
+  // どれもその場で合成する(音声ファイルは使わない)。演出の強さで重ねる音の数が変わる
   let actx = null;
   const audio = () => {
     try { if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)(); return actx; } catch (e) { return null; }
   };
-  const vol = v => v * (loud() ? 1 : 0.45);
   function tone(f, d, type, v, slide, at = 0) {
     const A = audio();
     if (!A) return;
@@ -1896,7 +1912,7 @@
       o.type = type;
       o.frequency.setValueAtTime(f, t0);
       o.frequency.exponentialRampToValueAtTime(f * slide, t0 + d);
-      g.gain.setValueAtTime(vol(v), t0);
+      g.gain.setValueAtTime(v, t0);
       g.gain.exponentialRampToValueAtTime(0.001, t0 + d);
       o.connect(g).connect(A.destination);
       o.start(t0); o.stop(t0 + d);
@@ -1919,7 +1935,7 @@
       bp.type = 'bandpass'; bp.Q.value = 1.2;
       bp.frequency.setValueAtTime(f0, t0);
       bp.frequency.exponentialRampToValueAtTime(f1, t0 + d);
-      g.gain.setValueAtTime(vol(v), t0);
+      g.gain.setValueAtTime(v, t0);
       g.gain.exponentialRampToValueAtTime(0.001, t0 + d);
       src.connect(bp).connect(g).connect(A.destination);
       src.start(t0); src.stop(t0 + d);
@@ -1931,13 +1947,24 @@
   const lidClack = () => tone(980, 0.05, 'square', 0.07, 0.6);          // 箱のフタが閉まる
   const whoosh = () => noise(0.3, 500, 2400, 0.22);                      // 箱が飛んでいく
   const popSound = () => { noise(0.16, 2600, 900, 0.9); tone(150, 0.14, 'sine', 0.5, 0.45); };   // クラッカー
-  function fanfare() {                           // 上がっていく4音。派手めは和音とキラキラを重ねる
+  // ファンファーレ: 上がっていく4音に和音とキラキラ。at 秒後に始める。派手めは、前に太鼓の連打、頭にシンバル、あとにもうひと節
+  function fanfare(at, big) {
     const N = [523.25, 659.25, 783.99, 1046.5];
-    N.forEach((f, i) => tone(f, 0.26, 'triangle', 0.2, 1.0, i * 0.11));
-    if (!loud()) return;
-    N.forEach(f => tone(f, 1.1, 'sine', 0.07, 1.0, 0.5));
-    for (let k = 0; k < 9; k++) tone(1800 + Math.random() * 1600, 0.07, 'sine', 0.06, 1.3, 0.45 + Math.random() * 1.0);
+    if (big) {
+      for (let k = 0; k < 12; k++) noise(0.06, 900, 500, 0.12 + k * 0.03, at - 0.36 + 0.36 * Math.sqrt(k / 12));
+      noise(1.4, 9000, 4200, 0.3, at);
+    }
+    N.forEach((f, i) => tone(f, 0.26, 'triangle', 0.2, 1.0, at + i * 0.11));
+    if (reduceMotion) return;
+    N.forEach(f => tone(f, 1.1, 'sine', 0.07, 1.0, at + 0.5));
+    for (let k = 0; k < 9; k++) tone(1800 + Math.random() * 1600, 0.07, 'sine', 0.06, 1.3, at + 0.45 + Math.random() * 1.0);
+    if (!big) return;
+    [783.99, 1046.5, 1318.5, 1568].forEach((f, i) => tone(f, 0.2, 'triangle', 0.18, 1.0, at + 1.0 + i * 0.09));
+    [523.25, 783.99, 1046.5, 1568].forEach(f => tone(f, 1.4, 'sine', 0.06, 1.0, at + 1.4));
   }
+  const boom = at => { noise(0.55, 260, 60, 0.9, at); for (let k = 0; k < 7; k++) noise(0.05, 5000, 3000, 0.12, at + 0.25 + Math.random() * 0.5); };   // 花火
+  const coinTick = () => tone(1500 + Math.random() * 500, 0.08, 'sine', 0.1, 1.6);   // コインが届いた
+  const bling = () => { tone(1320, 0.12, 'sine', 0.12, 1.0); tone(1760, 0.18, 'sine', 0.1, 1.0, 0.07); };      // 派手め: フタが閉まったとき
 
   // ---- 進行 ----
   function idle() {
@@ -2009,9 +2036,9 @@
       const rand = cur.mode === 'random';
       const title = document.getElementById('mTitle');
       title.textContent = won ? 'クリア' : '詰み';
-      title.classList.remove('pop', 'popSoft');
+      title.classList.remove('pop', 'popSoft', 'popMega');
       void title.offsetWidth;                     // 付け直してアニメーションを最初から
-      if (won) title.classList.add(loud() ? 'pop' : 'popSoft');
+      if (won) title.classList.add(mega() ? 'popMega' : full() ? 'pop' : 'popSoft');
       document.getElementById('mStars').hidden = document.getElementById('mStat').hidden = true;
       if (won) showRating();
       document.getElementById('mSub').textContent = won
@@ -2027,7 +2054,7 @@
       btn.textContent = won ? (rand ? '次のランダムへ' : '次のステージへ') : '最初から';
       btn.dataset.won = won ? '1' : '0';
       document.getElementById('modal').hidden = false;
-    }, won ? (loud() ? 1000 : 800) : 350);
+    }, won ? (mega() ? 1750 : full() ? 1000 : 800) : 350);
   }
 
   function update(dt) {
@@ -2059,10 +2086,15 @@
         b.leave += dt / leaveTime();
         if (was < LID && b.leave >= LID) {     // フタが閉まった
           lidClack();
-          vibe(15, 0);
-          if (loud()) sparkle(boxX(i), BOX_Y - 10);
+          vibe([15, 30, 25], 15);
+          if (full()) sparkle(boxX(i), BOX_Y - 10, mega() ? 18 : 9);
+          if (mega()) { bling(); puff(boxX(i), BOX_Y); }
         }
-        if (was < LID + 0.05 && b.leave >= LID + 0.05 && loud()) whoosh();
+        if (was < LID + 0.05 && b.leave >= LID + 0.05 && full()) whoosh();
+        if (mega() && b.leave > LID) {         // 飛んでいく箱が星の尾を引く
+          const L = boxLeave(b);
+          trail(boxX(i) + L.dx, BOX_Y + L.dy);
+        }
         if (b.leave >= 1) {
           b.items.forEach(s => { s.state = 'done'; });
           spawnBox(i);
@@ -2199,7 +2231,7 @@
       const y = boxY(b), L = b.leaving ? boxLeave(b) : null;
       ctx.save();
       ctx.translate(x + (L ? L.dx : 0), y + (L ? L.dy : 0));
-      if (L) { ctx.rotate(L.rot); ctx.globalAlpha = L.alpha; }
+      if (L) { ctx.rotate(L.rot); ctx.scale(L.sc, L.sc); ctx.globalAlpha = L.alpha; }
       drawBox(0, 0, b.color);
       for (const s of b.items) if (s.state === 'box') drawScrew(SLOT[s.dest.slot][0], SLOT[s.dest.slot][1], s.color, s.rot, 0.96);
       if (L) drawLid(0, L.lidY, b.color, L.lidA * L.alpha);
@@ -2259,66 +2291,113 @@
   }
 
   // ---- 紙吹雪とクラッカー ----
-  // 盤面の上に重ねた透明なキャンバス(#fx)に描く。座標は #stage の CSS ピクセル。クリアの画面の上にも降る
+  // 画面全体に重ねた透明なキャンバス(#fx)に描く。座標は画面の CSS ピクセル。クリアの画面の上にも、上のコインの所にも描ける
   const fxc = document.getElementById('fx'), fxx = fxc.getContext('2d');
-  let parts = [], poppers = [], flash = 0, fxW = 0, fxH = 0, fxDirty = false, celebTimers = [];
+  let parts = [], poppers = [], flash = 0, flashHue = -1, fxW = 0, fxH = 0, fxDirty = false, celebTimers = [];
   function fitFx() {
-    fxW = stage.clientWidth; fxH = stage.clientHeight;
+    fxW = window.innerWidth; fxH = window.innerHeight;
     fxc.width = Math.round(fxW * dpr); fxc.height = Math.round(fxH * dpr);
     fxc.style.width = fxW + 'px'; fxc.style.height = fxH + 'px';
     fxx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
-  // 盤面の座標を #stage の CSS ピクセルへ
-  const toStage = (x, y) => ({ x: cv.offsetLeft + x * scale, y: cv.offsetTop + y * scale });
+  // 盤面の座標を画面の CSS ピクセルへ
+  const toView = (x, y) => { const r = cv.getBoundingClientRect(); return { x: r.left + x * scale, y: r.top + y * scale }; };
+  const coinEl = () => document.querySelector('#prog .coin');
+  function glowCoin() { const c = coinEl(); c.classList.remove('glow'); void c.offsetWidth; c.classList.add('glow'); }
   function clearFx() {
     celebTimers.forEach(clearTimeout); celebTimers = [];
-    parts = []; poppers = []; flash = 0; fxDirty = true;
-    document.querySelector('#prog .coin').classList.remove('glow');
+    parts = []; poppers = []; flash = 0; flashHue = -1; fxDirty = true;
+    coinEl().classList.remove('glow');
+    stage.classList.remove('shake');
   }
-  // 箱のフタが閉まったときの小さな星
-  function sparkle(x, y) {
-    const c = toStage(x, y);
-    for (let k = 0; k < 9; k++) {
-      const a = Math.random() * TAU, v = 60 + Math.random() * 110;
+  const later = (sec, f) => celebTimers.push(setTimeout(f, sec * 1000));
+  const rnd01 = () => Math.random();
+  const paper = (x, y, vx, vy, c, g) => ({ kind: rnd01() < 0.25 ? 'dot' : 'paper', x, y, vx, vy,
+    rot: rnd01() * TAU, vr: (rnd01() - 0.5) * 14, flip: rnd01() * TAU, ph: rnd01() * TAU,
+    w: 6 + rnd01() * 5, h: 9 + rnd01() * 7, c, t: 0, life: 7, g });
+  // 小さな星(箱のフタが閉まったとき)
+  function sparkle(x, y, n) {
+    const c = toView(x, y);
+    for (let k = 0; k < n; k++) {
+      const a = rnd01() * TAU, v = 60 + rnd01() * (n > 9 ? 190 : 110);
       parts.push({ kind: 'star', x: c.x + Math.cos(a) * 20, y: c.y + Math.sin(a) * 12, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 40,
-        rot: Math.random() * TAU, vr: 4, size: 4 + Math.random() * 4, c: '#fff4c2', t: 0, life: 0.55 + Math.random() * 0.25, g: 0 });
+        rot: rnd01() * TAU, vr: 4, size: 4 + rnd01() * 4, c: '#fff4c2', t: 0, life: 0.55 + rnd01() * 0.25, g: 0 });
     }
+  }
+  // 派手め: 箱から紙吹雪がひとつかみ飛び出す
+  function puff(x, y) {
+    const c = toView(x, y), cols = COLORS.map(C => C.c);
+    for (let k = 0; k < 14; k++) {
+      const a = -Math.PI / 2 + (rnd01() - 0.5) * 2.2, v = 180 + rnd01() * 200;
+      parts.push(paper(c.x, c.y, Math.cos(a) * v, Math.sin(a) * v, cols[k % cols.length], 0.8));
+    }
+  }
+  // 派手め: 飛んでいく箱の星の尾
+  function trail(x, y) {
+    const c = toView(x, y);
+    for (let k = 0; k < 2; k++) parts.push({ kind: 'star', x: c.x + (rnd01() - 0.5) * 40, y: c.y + (rnd01() - 0.5) * 30, vx: (rnd01() - 0.5) * 30, vy: 20 + rnd01() * 30,
+      rot: rnd01() * TAU, vr: 5, size: 3 + rnd01() * 4, c: k ? '#ffe27a' : '#ffffff', t: 0, life: 0.5 + rnd01() * 0.3, g: 0 });
   }
   // 紙吹雪を n 枚。(x, y) から向き ang のまわりへ吹き出す
   function burst(x, y, ang, n, colors) {
     const sp = Math.min(fxW, fxH);
     for (let k = 0; k < n; k++) {
-      const a = ang + (Math.random() - 0.5) * 0.8, v = sp * (1.9 + Math.random() * 1.3);
-      const round = Math.random() < 0.25;
-      parts.push({ kind: round ? 'dot' : 'paper', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v,
-        rot: Math.random() * TAU, vr: (Math.random() - 0.5) * 14, flip: Math.random() * TAU, ph: Math.random() * TAU,
-        w: 6 + Math.random() * 5, h: 9 + Math.random() * 7, c: colors[k % colors.length], t: 0, life: 7, g: 1 });
+      const a = ang + (rnd01() - 0.5) * 0.8, v = sp * (1.9 + rnd01() * 1.3);
+      parts.push(paper(x, y, Math.cos(a) * v, Math.sin(a) * v, colors[k % colors.length], 1));
     }
   }
-  // クリアの演出: 下の両隅にクラッカーが出て、弾けて紙吹雪。派手めは2発を時差で弾き、画面が一瞬光る。上のコインが光り、ファンファーレ
+  // 派手め: 花火(火花が丸く広がって尾を引き、ゆっくり落ちる)
+  function firework(x, y, c) {
+    const n = 40;
+    for (let k = 0; k < n; k++) {
+      const a = k / n * TAU + rnd01() * 0.1, v = 170 + rnd01() * 150;
+      parts.push({ kind: 'spark', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, c, t: 0, life: 1.1 + rnd01() * 0.4, g: 0.12 });
+    }
+    parts.push({ kind: 'bloom', x, y, c, t: 0, life: 0.35, g: 0, vx: 0, vy: 0 });
+  }
+  // 派手め: 盤面から上のコインへ飛んでいくコイン
+  function coinShower(n) {
+    const r = coinEl().getBoundingClientRect(), tx = r.left + r.width / 2, ty = r.top + r.height / 2;
+    const b = cv.getBoundingClientRect();
+    for (let k = 0; k < n; k++) {
+      later(k * 0.06, () => parts.push({ kind: 'coin', x0: b.left + b.width * (0.15 + 0.7 * rnd01()), y0: b.top + b.height * (0.45 + 0.4 * rnd01()),
+        x1: tx, y1: ty, lift: 80 + rnd01() * 120, x: 0, y: 0, t: 0, life: 0.75, g: 0, vx: 0, vy: 0 }));
+    }
+  }
+  // 派手め: 上から降るリボン
+  function ribbons(n, colors) {
+    for (let k = 0; k < n; k++) parts.push({ kind: 'ribbon', x: rnd01() * fxW, y: -40 - rnd01() * 160, vx: (rnd01() - 0.5) * 40, vy: 60 + rnd01() * 60,
+      ph: rnd01() * TAU, len: 50 + rnd01() * 40, c: colors[k % colors.length], t: 0, life: 7, g: 0.12, rot: 0, vr: 0 });
+  }
+  // クリアの演出。控えめ: 下の両隅のクラッカー2発(時差)と紙吹雪、光、あとから上からの紙吹雪、コインが光ってファンファーレ。
+  // 派手め: さらに両脇にもクラッカー(4発)、画面が揺れて虹色に光り、コインの雨、花火4発、リボン、太鼓とシンバルとファンファーレのもうひと節
   function celebrate() {
     clearFx();
     const colors = [...new Set(level.queue)].map(c => COLORS[c].c).concat(['#ffe27a', '#ffffff']);
-    const big = loud(), y = fxH - 34, n = big ? 85 : 32;
+    const big = mega(), y = fxH - 34, n = full() ? 85 : 32, p0 = 0.38;
     poppers = [
-      { x: 30, y, ang: -Math.PI * 0.38, t: 0, at: 0.38, popped: false, n },
-      { x: fxW - 30, y, ang: -Math.PI * 0.62, t: 0, at: big ? 0.56 : 0.38, popped: false, n },
+      { x: 30, y, ang: -Math.PI * 0.38, t: 0, at: p0, n },
+      { x: fxW - 30, y, ang: -Math.PI * 0.62, t: 0, at: full() ? p0 + 0.18 : p0, n },
     ];
-    poppers.forEach(p => { p.onPop = () => {
+    if (big) poppers.push(
+      { x: 22, y: fxH * 0.58, ang: -Math.PI * 0.22, t: 0, at: p0 + 0.34, n: 60 },
+      { x: fxW - 22, y: fxH * 0.58, ang: -Math.PI * 0.78, t: 0, at: p0 + 0.48, n: 60 });
+    poppers.forEach((p, i) => { p.popped = false; p.onPop = () => {
       burst(p.x + Math.cos(p.ang) * 34, p.y + Math.sin(p.ang) * 34, p.ang, p.n, colors);
       popSound();
-      if (big) flash = 0.4;
+      if (full()) flash = 0.4;
+      if (big && i === 0) { flashHue = 0; flash = 0.55; stage.classList.add('shake'); later(0.5, () => stage.classList.remove('shake')); }
     }; });
-    celebTimers.push(setTimeout(() => {
-      document.querySelector('#prog .coin').classList.add('glow');
-      fanfare();
-      vibe([30, 40, 30, 40, 160], 25);
-    }, 380));
-    if (big) celebTimers.push(setTimeout(() => {   // あとから上からもひと降り
-      for (let k = 0; k < 50; k++) parts.push({ kind: 'paper', x: Math.random() * fxW, y: -20 - Math.random() * 120, vx: (Math.random() - 0.5) * 60, vy: 40 + Math.random() * 80,
-        rot: Math.random() * TAU, vr: (Math.random() - 0.5) * 10, flip: Math.random() * TAU, ph: Math.random() * TAU,
-        w: 6 + Math.random() * 5, h: 9 + Math.random() * 7, c: colors[k % colors.length], t: 0, life: 7, g: 0.35 });
-    }, 1100));
+    fanfare(p0, big);
+    later(p0, () => { glowCoin(); vibe([40, 30, 40, 30, 40, 30, 80, 40, 260], [30, 40, 30, 40, 160]); });
+    if (full()) later(1.1, () => { for (let k = 0; k < 50; k++) parts.push(paper(rnd01() * fxW, -20 - rnd01() * 120, (rnd01() - 0.5) * 60, 40 + rnd01() * 80, colors[k % colors.length], 0.35)); });
+    if (!big) return;
+    later(0.6, () => coinShower(14));
+    [0.95, 1.25, 1.55, 1.85].forEach((t, k) => later(t, () => {
+      firework(fxW * (0.2 + 0.6 * rnd01()), fxH * (0.12 + 0.26 * rnd01()), colors[k % (colors.length - 2)]);
+      boom(0);
+    }));
+    later(1.2, () => ribbons(12, colors));
   }
   function updateFx(dt) {
     for (const p of poppers) {
@@ -2327,15 +2406,27 @@
     }
     poppers = poppers.filter(p => p.t < p.at + 1.2);
     if (flash > 0) flash = Math.max(0, flash - dt * 1.6);
+    if (flashHue >= 0) flashHue += 520 * dt;
     for (const q of parts) {
       q.t += dt;
       if (q.kind === 'star') { q.x += q.vx * dt; q.y += q.vy * dt; q.vx *= 1 - 3 * dt; q.vy *= 1 - 3 * dt; q.rot += q.vr * dt; continue; }
+      if (q.kind === 'coin') {                   // 弧を描いて上のコインへ。届いたら音とコインの光
+        const u = Math.min(1, q.t / q.life), e = u * u * (3 - 2 * u);
+        q.x = q.x0 + (q.x1 - q.x0) * e; q.y = q.y0 + (q.y1 - q.y0) * e - Math.sin(Math.PI * u) * q.lift;
+        if (u >= 1 && !q.hit) { q.hit = true; coinTick(); glowCoin(); }
+        continue;
+      }
+      if (q.kind === 'spark' || q.kind === 'bloom') {
+        q.vy += 900 * q.g * dt; q.vx *= 1 - 1.4 * dt; q.vy *= 1 - 1.4 * dt; q.x += q.vx * dt; q.y += q.vy * dt;
+        continue;
+      }
       q.vy += 900 * q.g * dt;
       q.vx *= 1 - 1.6 * dt; q.vy *= 1 - (q.vy > 0 ? 3.2 : 0.8) * dt;   // 落ちるときは空気で遅くなる(ひらひら)
       q.vx += Math.sin(q.t * 5 + q.ph) * 90 * dt;
-      q.x += q.vx * dt; q.y += q.vy * dt; q.rot += q.vr * dt; q.flip += 7 * dt;
+      q.x += q.vx * dt; q.y += q.vy * dt; q.rot += q.vr * dt;
+      if (q.flip !== undefined) q.flip += 7 * dt;
     }
-    parts = parts.filter(q => q.t < q.life && q.y < fxH + 30);
+    parts = parts.filter(q => q.t < q.life && q.y < fxH + 60);
   }
   function drawPopper(p) {
     const k = Math.min(1, p.t / 0.18), after = p.t - p.at;
@@ -2364,12 +2455,43 @@
     }
     fxDirty = true;
     fxx.clearRect(0, 0, fxW, fxH);
-    if (flash > 0) { fxx.fillStyle = `rgba(255,250,230,${flash})`; fxx.fillRect(0, 0, fxW, fxH); }
+    if (flash > 0) {                             // 光(派手めは虹色に移ろう)
+      fxx.fillStyle = flashHue >= 0 ? `hsla(${flashHue % 360},100%,82%,${flash})` : `rgba(255,250,230,${flash})`;
+      fxx.fillRect(0, 0, fxW, fxH);
+    }
     for (const p of poppers) drawPopper(p);
     for (const q of parts) {
-      const a = q.kind === 'star' ? 1 - q.t / q.life : Math.min(1, (q.life - q.t) / 0.6);
+      const a = q.kind === 'star' || q.kind === 'spark' || q.kind === 'bloom' ? 1 - q.t / q.life : Math.min(1, (q.life - q.t) / 0.6);
       fxx.save();
       fxx.globalAlpha = Math.max(0, a);
+      if (q.kind === 'spark') {                   // 火花: 進む向きに尾を引く線
+        fxx.strokeStyle = q.c; fxx.lineWidth = 2.6; fxx.lineCap = 'round';
+        fxx.beginPath(); fxx.moveTo(q.x - q.vx * 0.06, q.y - q.vy * 0.06); fxx.lineTo(q.x, q.y); fxx.stroke();
+        fxx.fillStyle = '#ffffff'; fxx.beginPath(); fxx.arc(q.x, q.y, 1.4, 0, TAU); fxx.fill();
+        fxx.restore(); continue;
+      }
+      if (q.kind === 'bloom') {                   // 花火の芯の光
+        const g = fxx.createRadialGradient(q.x, q.y, 0, q.x, q.y, 60);
+        g.addColorStop(0, 'rgba(255,255,255,0.9)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+        fxx.fillStyle = g; fxx.beginPath(); fxx.arc(q.x, q.y, 60, 0, TAU); fxx.fill();
+        fxx.restore(); continue;
+      }
+      if (q.kind === 'coin') {
+        fxx.translate(q.x, q.y); fxx.scale(Math.abs(Math.cos(q.t * 9)) * 0.8 + 0.2, 1);
+        fxx.beginPath(); fxx.arc(0, 0, 10, 0, TAU); fxx.fillStyle = '#e09a12'; fxx.fill();
+        fxx.beginPath(); fxx.arc(0, -1, 8.5, 0, TAU); fxx.fillStyle = '#ffc93c'; fxx.fill();
+        fxx.beginPath(); fxx.arc(-2.5, -3.5, 3, 0, TAU); fxx.fillStyle = '#fff3b0'; fxx.fill();
+        fxx.restore(); continue;
+      }
+      if (q.kind === 'ribbon') {                  // リボン: 波打つ帯
+        fxx.strokeStyle = q.c; fxx.lineWidth = 5; fxx.lineCap = 'round'; fxx.lineJoin = 'round';
+        fxx.beginPath();
+        for (let i = 0; i <= 10; i++) {
+          const u = i / 10, xx = q.x + Math.sin(q.t * 6 + q.ph + u * 7) * 9, yy = q.y - u * q.len;
+          if (i) fxx.lineTo(xx, yy); else fxx.moveTo(xx, yy);
+        }
+        fxx.stroke(); fxx.restore(); continue;
+      }
       fxx.translate(q.x, q.y); fxx.rotate(q.rot);
       fxx.fillStyle = q.c;
       if (q.kind === 'paper') { fxx.scale(Math.cos(q.flip), 1); fxx.fillRect(-q.w / 2, -q.h / 2, q.w, q.h); }
