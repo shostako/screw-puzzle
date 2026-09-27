@@ -182,10 +182,13 @@
   const NUDGE_W = 0.004;  // 倒立の釣り合いから押し出すときの最低回転速度(rad/ステップ、約0.24rad/秒)
   const NUDGE_ANGLE = 0.3;  // この角度だけ傾いたら押すのをやめ、あとは重力に任せる(rad)
   const BOARD = { x0: 8, x1: 392, y0: 164, y1: 710 };   // 板を置いてよい範囲
-  const VIS_DEPTH = 5;    // 最上階層から何段目までの板(とねじの色)が見えるか
+  const COLOR_DEPTH = 5;  // 最上階層から何段目までねじの色が見え、触れるか
+  const SHAPE_DEPTH = 6;  // 何段目まで板の形が見えるか(6段目は形だけで、ねじの色は分からない)
   const TIER_GAP = 6;     // 同じ階層の板どうしのすき間。同じ階層の板は衝突するので重ねて置かない
-  const MAX_PLATES = 18;  // 1ステージの板の上限
-  const MAX_HOLES = 5;    // 1枚の板のねじ穴の上限(板の枚数を増やして階層を埋めやすくする)
+  const MAX_PLATES = 36;  // 1ステージの板の上限
+  const MAX_HOLES = 4;    // 1枚の板のねじ穴の上限(ねじの総数を抑えつつ階層を増やす)
+  const SCREW_CAP = 75;   // 1ステージのねじの上限
+  const tierGoal = lv => Math.min(7 + Math.floor((lv - 1) / 3), 9);    // 階層の目標段数(ステージ1〜3で7段、4〜6で8段、7以降9段。ねじ60本前後で盤面が埋まるので10段以上は入りにくい)
   const DENSITY = 0.001, INERTIA_SCALE = 4;              // Matter.js の既定値(密度、慣性モーメントの倍率)に合わせる
 
   const COLORS = [
@@ -478,16 +481,17 @@
   }
 
   // 板を下の階層から置いていき、ねじの総数を3の倍数にそろえる。tb は下から数えた階層。
-  // 階層ごとに枚数(2〜4)を先に決め、その枚数まで形と位置を変えて粘る
-  function placePlates(lv, rnd, target) {
+  // 階層ごとに枚数(序盤は2枚、ステージ4からは2〜3枚)を先に決め、その枚数まで形と位置を変えて粘る
+  function placePlates(lv, rnd) {
     const maxCover = Math.min(3 + Math.floor(lv / 3), 6);
+    const goal = tierGoal(lv);
     const plates = [];
     let S = 0, tb = 0, emptyTiers = 0;
-    while (S < target && plates.length < MAX_PLATES && emptyTiers < 4) {
-      const want = 2 + Math.floor(rnd() * 3);
+    while (tb < goal && S < SCREW_CAP && plates.length < MAX_PLATES && emptyTiers < 6) {
+      const want = 2 + (lv >= 4 && rnd() < 0.5 ? 1 : 0);
       let placed = 0, misses = 0;
-      // 目標のねじ数に達しても、階層は最低2枚まで埋める
-      while (placed < want && (S < target || placed < 2) && plates.length < MAX_PLATES && misses < 14) {
+      // ねじの上限に達しても、階層は最低2枚まで埋める
+      while (placed < want && (S < SCREW_CAP || placed < 2) && plates.length < MAX_PLATES && misses < 14) {
         const sh = makeShape(rnd);
         if (!sh) { misses++; continue; }
         const pts = coarse(sh);
@@ -510,29 +514,29 @@
       }
       if (placed) { tb++; emptyTiers = 0; } else emptyTiers++;
     }
-    // ねじの総数を、目標+2 以下の3の倍数にそろえる(穴の多い板から1つずつ減らす)
-    while (S % 3 !== 0 || S > target + 2) {
+    // ねじの総数を、上限以下の3の倍数にそろえる(穴の多い板から1つずつ減らす)
+    while (S % 3 !== 0 || S > SCREW_CAP) {
       let best = null;
       for (const p of plates) if (p.sh.holes.length > 2 && (!best || p.sh.holes.length > best.sh.holes.length)) best = p;
       if (best) { best.sh.holes.pop(); best.holesW.pop(); S--; }
       else if (S % 3 !== 0 && plates.length > 1) S -= plates.pop().sh.holes.length;
       else break;
     }
-    return { plates, S };
+    return { plates, S, tiers: new Set(plates.map(p => p.tb)).size };
   }
 
   function genLevel(lv) {
-    // 配置が早く行き詰まって目標のねじ数に届かなかったら、種を変えて作り直す(同じ番号なら同じ盤面)
-    const target = Math.min(15 + 3 * lv, 36);
+    // 配置が早く行き詰まって目標の段数に届かなかったら、種を変えて作り直す(同じ番号なら同じ盤面)
+    const goal = tierGoal(lv);
     let pick = null, last = null;
-    for (let k = 0; k < 20; k++) {
+    for (let k = 0; k < 8; k++) {
       const rnd = mulberry32(lv * 7919 + 13 + k * 104729);
-      const g = placePlates(lv, rnd, target);
+      const g = placePlates(lv, rnd);
       g.rnd = rnd;
       last = g;
       const ok = g.S % 3 === 0 && g.S >= 9 && g.plates.length >= 3;
-      if (ok && (!pick || g.S > pick.S)) pick = g;
-      if (pick && pick.S >= target - 3) break;
+      if (ok && (!pick || g.tiers > pick.tiers || (g.tiers === pick.tiers && g.S > pick.S))) pick = g;
+      if (pick && pick.tiers >= goal) break;
     }
     const { plates, S, rnd } = pick || last;
     // 階層は上から 0, 1, 2 …(空いた階層は詰める)
@@ -707,7 +711,7 @@
       const body = makeBody(g, wx, wy, pl.ang, pl.tier);
       Body.setStatic(body, true);
       Composite.add(engine.world, body);
-      return { body, tier: pl.tier, tint: pl.tint, path: g.path, holes: g.holes, f: g.f, rad: g.rad, screws: [], constraint: null, nudge: null, gone: false, vis: 1 };
+      return { body, tier: pl.tier, tint: pl.tint, path: g.path, holes: g.holes, f: g.f, rad: g.rad, screws: [], constraint: null, nudge: null, gone: false, vis: 1, cvis: 1 };
     });
 
     screws = data.screws.map(s => {
@@ -725,7 +729,7 @@
     buffer = new Array(BUF).fill(null);
     for (let i = 0; i < ACTIVE; i++) spawnBox(i);
     updateTop();
-    planks.forEach(p => { p.vis = visible(p) ? 1 : 0; });
+    planks.forEach(p => { p.vis = visible(p) ? 1 : 0; p.cvis = known(p) ? 1 : 0; });
     document.getElementById('lv').textContent = lv;
     document.getElementById('modal').hidden = true;
     updateHud();
@@ -763,15 +767,16 @@
   }
 
   // ---- 階層の見え方 ----
-  // 最上階層 = ねじが残っている板のうち一番上の階層。そこから VIS_DEPTH 段目までの板とねじが見える。
-  // 最上階層の板が全部外れる(ねじ0本で落ち始める)と、見える範囲が下へずれる
+  // 最上階層 = ねじが残っている板のうち一番上の階層。そこから COLOR_DEPTH 段目までは板とねじの色が見えて触れる。
+  // SHAPE_DEPTH 段目までは板の形だけ見える。最上階層の板が全部外れる(ねじ0本で落ち始める)と、見える範囲が下へずれる
   let topTier = 0;
   function updateTop() {
     let t = Infinity;
     for (const p of planks) if (p.screws.length) t = Math.min(t, p.tier);
     topTier = t;
   }
-  const visible = p => p.tier - topTier < VIS_DEPTH;
+  const visible = p => p.tier - topTier < SHAPE_DEPTH;   // 板の形が見える
+  const known = p => p.tier - topTier < COLOR_DEPTH;     // ねじの色が見えて触れる
 
   // ---- 遮蔽判定: 上の階層の板がねじに少しでも被っていたら外せない ----
   function isBlocked(s) {
@@ -867,7 +872,7 @@
   }
 
   function tapScrew(s) {
-    if (isBlocked(s)) { s.shake = 0.3; buzz(); return; }
+    if (!known(s.plank) || isBlocked(s)) { s.shake = 0.3; buzz(); return; }
     const b = openBoxFor(s.color);
     let dest;
     if (b) {
@@ -934,7 +939,7 @@
   }
   function canMove() {
     if (buffer.includes(null)) return true;
-    return screws.some(s => s.state === 'board' && visible(s.plank) && !isBlocked(s) && openBoxFor(s.color));
+    return screws.some(s => s.state === 'board' && known(s.plank) && !isBlocked(s) && openBoxFor(s.color));
   }
   function finish(won) {
     ended = true;
@@ -953,7 +958,11 @@
   function update(dt) {
     if (flashBuf > 0) flashBuf = Math.max(0, flashBuf - dt);
     updateTop();
-    for (const p of planks) p.vis += ((visible(p) ? 1 : 0) - p.vis) * Math.min(1, dt * 5);   // 新しく見えた板はふわっと出す
+    for (const p of planks) {             // 新しく見えた板やねじの色はふわっと出す
+      const k = Math.min(1, dt * 5);
+      p.vis += ((visible(p) ? 1 : 0) - p.vis) * k;
+      p.cvis += ((known(p) ? 1 : 0) - p.cvis) * k;
+    }
     for (const s of screws) {
       if (s.shake > 0) s.shake = Math.max(0, s.shake - dt);
       if (s.state === 'fly') {
@@ -1021,6 +1030,16 @@
     ctx.lineCap = 'round';
     ctx.save(); ctx.rotate(a); crossPath(6.2); ctx.strokeStyle = C.d; ctx.lineWidth = 4.8; ctx.stroke(); ctx.restore();
     ctx.save(); ctx.translate(0.5, 0.9); ctx.rotate(a); crossPath(5.2); ctx.strokeStyle = C.m; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+    ctx.restore();
+  }
+  // 色の分からないねじ(形だけ見える階層)。銀色のねじと見分けがつくよう、色の無い暗い影で描く
+  function drawBlank(x, y, a) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath(); ctx.arc(0, 0, SR, 0, TAU); ctx.fillStyle = '#3a2618'; ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, SR - 2, 0, TAU); ctx.fillStyle = '#5a4030'; ctx.fill();
+    ctx.rotate(a); crossPath(6.2);
+    ctx.lineCap = 'round'; ctx.strokeStyle = '#3a2618'; ctx.lineWidth = 4.8; ctx.stroke();
     ctx.restore();
   }
   function drawBox(x, y, ci) {
@@ -1100,7 +1119,12 @@
       for (const s of p.screws) {
         const w = holeWorld(p, s.hole);
         const sx = s.shake > 0 ? Math.sin(s.shake * 70) * 3.5 * (s.shake / 0.3) : 0;
-        drawScrew(w.x + sx, w.y, s.color, s.rot + p.body.angle, 1);
+        if (p.cvis < 0.99) drawBlank(w.x + sx, w.y, s.rot + p.body.angle);
+        if (p.cvis > 0.01) {
+          ctx.globalAlpha = p.vis * p.cvis;
+          drawScrew(w.x + sx, w.y, s.color, s.rot + p.body.angle, 1);
+          ctx.globalAlpha = p.vis;
+        }
       }
       ctx.restore();
     }
