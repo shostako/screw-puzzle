@@ -2,6 +2,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@700;800&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/poly-decomp@0.3.0/build/decomp.min.js"></script>
 <style>
   /* 木の作業台の上で遊ぶ単一テーマ。背景の木目は起動時に描いて body に貼る */
   :root {
@@ -164,7 +165,8 @@
 
 <script>
 (() => {
-  const { Engine, Bodies, Body, Composite, Constraint } = Matter;
+  const { Engine, Bodies, Body, Composite, Constraint, Vertices, Common } = Matter;
+  Common.setDecomp(window.decomp);
 
   // ---- 定数 ----
   const W = 400, H = 716;
@@ -180,6 +182,8 @@
   const NUDGE_W = 0.004;  // 倒立の釣り合いから押し出すときの最低回転速度(rad/ステップ、約0.24rad/秒)
   const NUDGE_ANGLE = 0.3;  // この角度だけ傾いたら押すのをやめ、あとは重力に任せる(rad)
   const BOARD = { x0: 8, x1: 392, y0: 164, y1: 710 };   // 板を置いてよい範囲
+  const VIS_DEPTH = 5;    // 最上階層から何段目までの板(とねじの色)が見えるか
+  const TIER_GAP = 6;     // 同じ階層の板どうしのすき間。同じ階層の板は衝突するので重ねて置かない
   const DENSITY = 0.001, INERTIA_SCALE = 4;              // Matter.js の既定値(密度、慣性モーメントの倍率)に合わせる
 
   const COLORS = [
@@ -446,42 +450,56 @@
     for (const q of plates) for (const a of q.holesW) for (const b of hw) {
       if (len(a[0] - b[0], a[1] - b[1]) < GAP) return false;
     }
-    if (!plates.length) return true;
-    // 既存の板とほどよく重ねる(離れ小島にも、べったり覆うのにもしない)
+    // 同じ階層の板とは重ねず、すき間も空ける(あとで衝突させる)
+    const inside = (q, x, y) => { const l = unplace(q, x, y); return q.sh.f(l[0], l[1]) < TIER_GAP; };
+    for (const q of plates) {
+      if (q.tb !== pl.tb) continue;
+      if (wp.some(([x, y]) => inside(q, x, y)) || q.wp.some(([x, y]) => inside(pl, x, y))) return false;
+    }
+    const lower = plates.filter(q => q.tb < pl.tb);
+    if (!lower.length) return true;          // 一番下の階層には重ねる相手がいない
+    // 下の階層の板とほどよく重ねる(離れ小島にも、べったり覆うのにもしない)
     let over = 0;
     for (const [x, y] of wp) {
-      if (plates.some(q => { const l = unplace(q, x, y); return q.sh.f(l[0], l[1]) < 0; })) over++;
+      if (lower.some(q => { const l = unplace(q, x, y); return q.sh.f(l[0], l[1]) < 0; })) over++;
     }
     const frac = over / wp.length;
     if (frac < 0.15 || frac > 0.8) return false;
     let cov = 0;
-    for (const q of plates) for (const a of q.holesW) {
+    for (const q of lower) for (const a of q.holesW) {
       const l = unplace(pl, a[0], a[1]);
       if (covers(pl.sh.f, l[0], l[1])) cov++;
     }
     if (cov > maxCover) return false;
-    if (cov === 0 && plates.length >= 2 && rnd() < 0.7) return false;
+    if (cov === 0 && lower.length >= 2 && rnd() < 0.7) return false;
     return true;
   }
 
-  // 板を置いていき、ねじの総数を3の倍数にそろえる
+  // 板を下の階層から置いていき、ねじの総数を3の倍数にそろえる。tb は下から数えた階層
   function placePlates(lv, rnd, target) {
     const maxCover = Math.min(3 + Math.floor(lv / 3), 6);
     const plates = [];
-    let S = 0, fails = 0;
+    let S = 0, fails = 0, tb = 0, inTier = 0;
     while (S < target && plates.length < 14 && fails < 80) {
+      if (inTier >= 3 || (inTier >= 1 && rnd() < 0.5)) { tb++; inTier = 0; }
       const sh = makeShape(rnd);
       if (!sh) { fails++; continue; }
       const pts = coarse(sh);
       let ok = null;
       for (let k = 0; k < 16 && !ok; k++) {
-        const spread = plates.length ? 1 : 0.3;
-        const pl = { sh, ang: rnd() * TAU, x: 200 + (rnd() * 2 - 1) * 130 * spread, y: 437 + (rnd() * 2 - 1) * 190 * spread };
+        const spread = !plates.length ? 0.3 : tb === 0 ? 0.6 : 1;
+        const pl = { sh, tb, ang: rnd() * TAU, x: 200 + (rnd() * 2 - 1) * 130 * spread, y: 437 + (rnd() * 2 - 1) * 190 * spread };
         if (fits(pl, pts, plates, maxCover, rnd)) ok = pl;
       }
-      if (!ok) { fails++; continue; }
+      if (!ok) {
+        fails++;
+        if (inTier >= 1) { tb++; inTier = 0; }   // 同じ階層に入らなければ次の階層へ
+        continue;
+      }
       ok.holesW = sh.holes.map(h => place(ok, h[0], h[1]));
+      ok.wp = pts.map(p => place(ok, p[0], p[1]));
       plates.push(ok);
+      inTier++;
       S += sh.holes.length;
     }
     // ねじの総数を3の倍数にそろえる(穴の多い板から1つずつ減らす)
@@ -509,6 +527,9 @@
       if (pick && pick.S >= target - 3) break;
     }
     const { plates, S, rnd } = pick || last;
+    // 階層は上から 0, 1, 2 …(空いた階層は詰める)
+    const tbs = [...new Set(plates.map(p => p.tb))].sort((a, b) => b - a);
+    plates.forEach(p => { p.tier = tbs.indexOf(p.tb); });
     const nColors = Math.min(3 + Math.floor((lv - 1) / 2), 6);
 
     // 箱の順番を先に決め、上の層のねじほど早い箱の色になるよう割り当てる(詰みにくくする)
@@ -523,11 +544,11 @@
       [L[i], L[j]] = [L[j], L[i]];
     }
     const list = [];
-    plates.forEach((p, li) => p.sh.holes.forEach((h, hi) => list.push({ pl: li, hi, key: li + rnd() * 2.5 })));
+    plates.forEach((p, li) => p.sh.holes.forEach((h, hi) => list.push({ pl: li, hi, key: -p.tier + rnd() * 1.5 })));
     list.sort((a, b) => b.key - a.key);
     list.forEach((s, i) => { s.color = L[i]; });
-    const tints = shuffle(TINTS.slice(), rnd);
-    plates.forEach((p, i) => { p.tint = tints[i % tints.length]; });
+    const tints = shuffle(TINTS.slice(), rnd);                 // 同じ階層の板は同じ色
+    plates.forEach(p => { p.tint = tints[p.tier % tints.length]; });
     return { plates, screws: list, queue: boxQueue, rnd };
   }
 
@@ -614,8 +635,11 @@
     const area = n * step * step, mx = sx / n, my = sy / n;
     const inertia = (sq / n - mx * mx - my * my) * area;   // 重心まわりの断面二次極モーメント(密度1)
     const path = new Path2D();
-    let rad = 0;
+    let rad = 0, outline = null, outArea = 0;
     for (const loop of contours(v, nx, ny, x0, y0, step)) {
+      let a = 0;                                   // 一番大きい輪が外周(ほかは飾り穴)
+      for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) a += loop[j][0] * loop[i][1] - loop[i][0] * loop[j][1];
+      if (Math.abs(a) > outArea) { outArea = Math.abs(a); outline = loop; }
       simplify(loop, 0.12).forEach(([x, y], k) => {
         if (k) path.lineTo(x - mx, y - my); else path.moveTo(x - mx, y - my);
         rad = Math.max(rad, len(x - mx, y - my));
@@ -633,7 +657,30 @@
       for (const h of holes) d = Math.max(d, HR - len(x - h.x, y - h.y));
       return d;
     };
-    return { path, holes, f, rad, area, inertia, mx, my };
+    outline = simplify(outline, 1).map(([x, y]) => [x - mx, y - my]);   // 衝突判定用(重心基準)
+    return { path, holes, f, rad, area, inertia, mx, my, outline };
+  }
+
+  // 衝突用の剛体: 外周を凸な部品に分けた複合剛体。同じ階層の板どうしだけ衝突する。
+  // 重心は実形状(穴を抜いた格子)の値に置き直し、質量と慣性モーメントも実形状の値にする
+  function makeBody(g, x, y, ang, tier) {
+    const poly = g.outline.map(([px, py]) => [px + x, py + y]);
+    const toV = c => c.map(([px, py]) => ({ x: px, y: py }));
+    let sets = [];
+    try {
+      decomp.makeCCW(poly);
+      decomp.removeCollinearPoints(poly, 0.02);
+      sets = decomp.quickDecomp(poly).filter(c => c.length >= 3).map(toV).filter(vs => Vertices.area(vs) > 4);
+    } catch (e) { sets = []; }
+    if (!sets.length) sets = [Vertices.hull(toV(poly))];
+    const parts = sets.map(vs => Body.create({ position: Vertices.centre(vs), vertices: vs }));
+    const bit = 1 << (tier % 30);
+    const body = Body.create({ parts, frictionAir: 0.012, friction: 0.2, collisionFilter: { group: 0, category: bit, mask: bit } });
+    Body.setCentre(body, { x, y });
+    Body.setMass(body, g.area * DENSITY);
+    Body.setInertia(body, g.inertia * DENSITY * INERTIA_SCALE);
+    Body.setAngle(body, ang);
+    return body;
   }
 
   // ---- ステージ構築 ----
@@ -646,26 +693,20 @@
     engine.gravity.y = 1.1;
     const data = genLevel(lv);
 
-    // 板同士はぶつからない(層が違う)ので、剛体の形は何でもよい。質量と慣性モーメントだけ実形状に合わせる
-    planks = data.plates.map((pl, li) => {
+    planks = data.plates.map(pl => {
       const g = buildPlate(pl);
       const [wx, wy] = place(pl, g.mx, g.my);
-      const body = Bodies.circle(wx, wy, 12, {
-        angle: pl.ang,
-        frictionAir: 0.012,
-        collisionFilter: { group: -1 },
-      });
-      Body.setMass(body, g.area * DENSITY);
-      Body.setInertia(body, g.inertia * DENSITY * INERTIA_SCALE);
+      const body = makeBody(g, wx, wy, pl.ang, pl.tier);
       Body.setStatic(body, true);
       Composite.add(engine.world, body);
-      return { body, layer: li, tint: pl.tint, path: g.path, holes: g.holes, f: g.f, rad: g.rad, screws: [], constraint: null, nudge: null, gone: false };
+      return { body, tier: pl.tier, tint: pl.tint, path: g.path, holes: g.holes, f: g.f, rad: g.rad, screws: [], constraint: null, nudge: null, gone: false, vis: 1 };
     });
 
     screws = data.screws.map(s => {
       const sc = {
         plank: planks[s.pl], hole: s.hi, color: s.color, state: 'board',
-        rot: (data.rnd() - 0.5) * 0.5 - planks[s.pl].body.angle, shake: 0,   // 十字は置いた時点でほぼ正立 from: null, dest: null, t: 0,
+        rot: (data.rnd() - 0.5) * 0.5 - planks[s.pl].body.angle,   // 十字は置いた時点でほぼ正立
+        shake: 0, from: null, dest: null, t: 0,
       };
       sc.plank.screws.push(sc);
       return sc;
@@ -675,6 +716,8 @@
     boxes = new Array(ACTIVE).fill(null);
     buffer = new Array(BUF).fill(null);
     for (let i = 0; i < ACTIVE; i++) spawnBox(i);
+    updateTop();
+    planks.forEach(p => { p.vis = visible(p) ? 1 : 0; });
     document.getElementById('lv').textContent = lv;
     document.getElementById('modal').hidden = true;
     updateHud();
@@ -711,11 +754,22 @@
     return destPos(s.dest);
   }
 
-  // ---- 遮蔽判定: 上の層の板がねじに少しでも被っていたら外せない ----
+  // ---- 階層の見え方 ----
+  // 最上階層 = ねじが残っている板のうち一番上の階層。そこから VIS_DEPTH 段目までの板とねじが見える。
+  // 最上階層の板が全部外れる(ねじ0本で落ち始める)と、見える範囲が下へずれる
+  let topTier = 0;
+  function updateTop() {
+    let t = Infinity;
+    for (const p of planks) if (p.screws.length) t = Math.min(t, p.tier);
+    topTier = t;
+  }
+  const visible = p => p.tier - topTier < VIS_DEPTH;
+
+  // ---- 遮蔽判定: 上の階層の板がねじに少しでも被っていたら外せない ----
   function isBlocked(s) {
     const p = s.plank, c = holeWorld(p, s.hole);
     for (const q of planks) {
-      if (q.gone || q.layer <= p.layer) continue;
+      if (q.gone || q.tier >= p.tier) continue;
       const dx = c.x - q.body.position.x, dy = c.y - q.body.position.y;
       if (dx * dx + dy * dy > (q.rad + SR + 3) ** 2) continue;
       const l = rot(dx, dy, -q.body.angle);
@@ -834,9 +888,9 @@
     const x = (e.clientX - r.left) / scale, y = (e.clientY - r.top) / scale;
     let best = null;
     for (const s of screws) {
-      if (s.state !== 'board') continue;
+      if (s.state !== 'board' || !visible(s.plank)) continue;
       const p = holeWorld(s.plank, s.hole);
-      if (Math.hypot(p.x - x, p.y - y) < 22 && (!best || s.plank.layer > best.plank.layer)) best = s;
+      if (Math.hypot(p.x - x, p.y - y) < 22 && (!best || s.plank.tier < best.plank.tier)) best = s;
     }
     if (best) tapScrew(best);
   });
@@ -872,7 +926,7 @@
   }
   function canMove() {
     if (buffer.includes(null)) return true;
-    return screws.some(s => s.state === 'board' && !isBlocked(s) && openBoxFor(s.color));
+    return screws.some(s => s.state === 'board' && visible(s.plank) && !isBlocked(s) && openBoxFor(s.color));
   }
   function finish(won) {
     ended = true;
@@ -890,6 +944,8 @@
 
   function update(dt) {
     if (flashBuf > 0) flashBuf = Math.max(0, flashBuf - dt);
+    updateTop();
+    for (const p of planks) p.vis += ((visible(p) ? 1 : 0) - p.vis) * Math.min(1, dt * 5);   // 新しく見えた板はふわっと出す
     for (const s of screws) {
       if (s.shake > 0) s.shake = Math.max(0, s.shake - dt);
       if (s.state === 'fly') {
@@ -974,15 +1030,15 @@
     }
   }
   function drawPlate(p) {
-    const { x, y } = p.body.position, a = p.body.angle;
+    const { x, y } = p.body.position, a = p.body.angle, A = ctx.globalAlpha;
     ctx.save();                                   // 影(常に真下へずらす)
     ctx.translate(x, y + 3); ctx.rotate(a);
     ctx.fillStyle = 'rgba(45,18,2,0.2)'; ctx.fill(p.path, 'evenodd');
     ctx.restore();
     ctx.save();
     ctx.translate(x, y); ctx.rotate(a);
-    ctx.globalAlpha = 0.82; ctx.fillStyle = p.tint; ctx.fill(p.path, 'evenodd');
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = A * 0.82; ctx.fillStyle = p.tint; ctx.fill(p.path, 'evenodd');
+    ctx.globalAlpha = A;
     ctx.save();                                   // 縁の内側を少し明るく
     ctx.clip(p.path, 'evenodd');
     ctx.lineWidth = 10; ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.stroke(p.path);
@@ -1029,13 +1085,16 @@
 
     // 板(下の層から)とねじ
     for (const p of planks) {
-      if (p.gone) continue;
+      if (p.gone || p.vis < 0.01) continue;
+      ctx.save();
+      ctx.globalAlpha = p.vis;
       drawPlate(p);
       for (const s of p.screws) {
         const w = holeWorld(p, s.hole);
         const sx = s.shake > 0 ? Math.sin(s.shake * 70) * 3.5 * (s.shake / 0.3) : 0;
         drawScrew(w.x + sx, w.y, s.color, s.rot + p.body.angle, 1);
       }
+      ctx.restore();
     }
 
     // 飛んでいるねじ
