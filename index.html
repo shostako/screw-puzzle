@@ -184,6 +184,8 @@
   const BOARD = { x0: 8, x1: 392, y0: 164, y1: 710 };   // 板を置いてよい範囲
   const VIS_DEPTH = 5;    // 最上階層から何段目までの板(とねじの色)が見えるか
   const TIER_GAP = 6;     // 同じ階層の板どうしのすき間。同じ階層の板は衝突するので重ねて置かない
+  const MAX_PLATES = 18;  // 1ステージの板の上限
+  const MAX_HOLES = 5;    // 1枚の板のねじ穴の上限(板の枚数を増やして階層を埋めやすくする)
   const DENSITY = 0.001, INERTIA_SCALE = 4;              // Matter.js の既定値(密度、慣性モーメントの倍率)に合わせる
 
   const COLORS = [
@@ -400,7 +402,7 @@
       holes.push(h);
     }
     if (holes.length < 2) return null;
-    sh.holes = holes.slice(0, 7);
+    sh.holes = holes.slice(0, MAX_HOLES);
     if (kind.cut && rnd() < 0.5) addCutouts(sh, rnd);
     return sh;
   }
@@ -475,32 +477,33 @@
     return true;
   }
 
-  // 板を下の階層から置いていき、ねじの総数を3の倍数にそろえる。tb は下から数えた階層
+  // 板を下の階層から置いていき、ねじの総数を3の倍数にそろえる。tb は下から数えた階層。
+  // 階層ごとに枚数(2〜4)を先に決め、その枚数まで形と位置を変えて粘る
   function placePlates(lv, rnd, target) {
     const maxCover = Math.min(3 + Math.floor(lv / 3), 6);
     const plates = [];
-    let S = 0, fails = 0, tb = 0, inTier = 0;
-    while (S < target && plates.length < 14 && fails < 80) {
-      if (inTier >= 3 || (inTier >= 1 && rnd() < 0.5)) { tb++; inTier = 0; }
-      const sh = makeShape(rnd);
-      if (!sh) { fails++; continue; }
-      const pts = coarse(sh);
-      let ok = null;
-      for (let k = 0; k < 16 && !ok; k++) {
-        const spread = !plates.length ? 0.3 : tb === 0 ? 0.6 : 1;
-        const pl = { sh, tb, ang: rnd() * TAU, x: 200 + (rnd() * 2 - 1) * 130 * spread, y: 437 + (rnd() * 2 - 1) * 190 * spread };
-        if (fits(pl, pts, plates, maxCover, rnd)) ok = pl;
+    let S = 0, tb = 0, emptyTiers = 0;
+    while (S < target && plates.length < MAX_PLATES && emptyTiers < 4) {
+      const want = 2 + Math.floor(rnd() * 3);
+      let placed = 0, misses = 0;
+      while (placed < want && S < target && plates.length < MAX_PLATES && misses < 14) {
+        const sh = makeShape(rnd);
+        if (!sh) { misses++; continue; }
+        const pts = coarse(sh);
+        let ok = null;
+        for (let k = 0; k < 24 && !ok; k++) {
+          const spread = !plates.length ? 0.3 : tb === 0 ? 0.7 : 1;
+          const pl = { sh, tb, ang: rnd() * TAU, x: 200 + (rnd() * 2 - 1) * 130 * spread, y: 437 + (rnd() * 2 - 1) * 190 * spread };
+          if (fits(pl, pts, plates, maxCover, rnd)) ok = pl;
+        }
+        if (!ok) { misses++; continue; }
+        ok.holesW = sh.holes.map(h => place(ok, h[0], h[1]));
+        ok.wp = pts.map(p => place(ok, p[0], p[1]));
+        plates.push(ok);
+        placed++;
+        S += sh.holes.length;
       }
-      if (!ok) {
-        fails++;
-        if (inTier >= 1) { tb++; inTier = 0; }   // 同じ階層に入らなければ次の階層へ
-        continue;
-      }
-      ok.holesW = sh.holes.map(h => place(ok, h[0], h[1]));
-      ok.wp = pts.map(p => place(ok, p[0], p[1]));
-      plates.push(ok);
-      inTier++;
-      S += sh.holes.length;
+      if (placed) { tb++; emptyTiers = 0; } else emptyTiers++;
     }
     // ねじの総数を3の倍数にそろえる(穴の多い板から1つずつ減らす)
     while (S % 3 !== 0) {
