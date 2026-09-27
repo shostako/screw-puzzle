@@ -114,6 +114,7 @@
     display: grid;
     place-items: center;
     background: rgba(35, 14, 2, 0.55);
+    z-index: 3;                           /* 知らせ(z-index 2)より前 */
   }
   #modal[hidden], #pick[hidden], #settings[hidden] { display: none; }
   #modal .card, #pick .card, #settings .card {
@@ -144,12 +145,15 @@
   }
   .gobtn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--go-deep); }
   .gobtn:disabled { filter: saturate(0.4); cursor: progress; }
+  /* 知らせはヒントと設定のボタンより前に出す(押した指はそのまま下のボタンに届く) */
   #toast {
     position: absolute;
+    z-index: 2;
     top: 8px;
     left: 50%;
     transform: translateX(-50%);
-    width: min(88%, 340px);
+    box-sizing: border-box;
+    width: min(100%, 360px);
     padding: 8px 14px;
     border-radius: 14px;
     background: rgba(35, 14, 2, 0.82);
@@ -227,9 +231,44 @@
     20%, 60% { transform: scale(1.35); filter: brightness(1.35) drop-shadow(0 0 8px #ffe27a); }
     40%, 80% { transform: scale(1.1); filter: brightness(1.1) drop-shadow(0 0 3px #ffe27a); }
   }
+  /* キャラ: クリアと詰みの画面ではカードの上に立ち、ヒントと戻るでは知らせの横に顔を出す */
+  .mbox { display: grid; justify-items: center; }
+  #mChara {
+    position: relative;
+    z-index: 1;
+    height: min(170px, 22vh);
+    margin-bottom: -18px;                 /* 足元をカードの縁に少し重ねる */
+    transform-origin: 50% 100%;
+    filter: drop-shadow(0 4px 0 rgba(60, 25, 5, 0.4));
+    pointer-events: none;
+  }
+  #mChara.in { animation: charaIn 0.5s cubic-bezier(.2, 1.5, .4, 1) both; }
+  #mChara.hop { animation: charaIn 0.5s cubic-bezier(.2, 1.5, .4, 1) both, charaHop 0.5s ease-in-out 0.55s 3; }
+  #mChara.sag { animation: charaSag 0.7s ease-out both; }
+  @keyframes charaIn { 0% { transform: translateY(24px) scale(0.6); opacity: 0; } 100% { transform: none; opacity: 1; } }
+  @keyframes charaHop { 50% { transform: translateY(-16px) scale(1.03, 0.97); } }
+  @keyframes charaSag { 0% { transform: translateY(-12px); opacity: 0; } 100% { transform: none; opacity: 1; } }
+  #toast.face { padding-left: 58px; text-align: left; }
+  #toastFace {
+    position: absolute;
+    left: 4px;
+    top: 50%;
+    width: 50px;
+    height: 50px;
+    margin-top: -25px;
+    box-sizing: border-box;
+    border: 3px solid #fff4dc;            /* 丸い顔アイコン。切り抜きの下端の直線を見せない */
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 40%, #fff8ea, #ffd98f);
+    object-fit: cover;
+    box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35);
+  }
+  #toastFace.in { animation: faceIn 0.4s cubic-bezier(.2, 1.7, .4, 1) both; }
+  @keyframes faceIn { 0% { transform: scale(0.3) rotate(-15deg); } 100% { transform: none; } }
   @media (prefers-reduced-motion: reduce) {
     .woodbtn:active, .gobtn:active, .pickbtn:active, .subbtn:active { transform: none; }
     #mTitle.pop, #mTitle.popSoft, #mTitle.popMega, .coin.glow, #mStars span.on, #stage.shake { animation: none; }
+    #mChara.in, #mChara.hop, #mChara.sag, #toastFace.in { animation: none; }
   }
 </style>
 
@@ -256,7 +295,7 @@
   </header>
   <div id="stage">
     <canvas id="cv"></canvas>
-    <div id="toast" hidden></div>
+    <div id="toast" hidden><img id="toastFace" alt="" hidden><span id="toastMsg"></span></div>
     <button id="hintBtn" class="woodbtn" type="button" aria-label="ヒント">
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V17h5.2v-1.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z" fill="none" stroke="#fff8ea" stroke-width="2.2" stroke-linejoin="round"/>
@@ -270,6 +309,8 @@
       </svg>
     </button>
     <div id="modal" hidden>
+      <div class="mbox">
+      <img id="mChara" alt="" hidden>
       <div class="card">
         <p id="mTitle" class="outlined"></p>
         <p id="mSub"></p>
@@ -278,6 +319,7 @@
         <button id="mUndo" class="gobtn" type="button" hidden>解ける所まで戻る</button>
         <button id="mBtn" class="gobtn" type="button"></button>
         <button id="mBack" class="subbtn" type="button" hidden>ステージに戻る</button>
+      </div>
       </div>
     </div>
     <div id="settings" hidden>
@@ -1804,7 +1846,7 @@
     rewindTo(k);
     play.rewinds++;
     hint = { s: fork, t: 4, go: false };
-    toast(k ? `${back}手戻した。赤い輪のねじを外したのが分かれ目` : '最初まで戻した。赤い輪のねじを外したのが分かれ目');
+    toast(k ? `${back}手戻した。赤い輪のねじが分かれ目` : '最初まで戻した。赤い輪のねじが分かれ目', 'oopsFace');
   }
   // ヒント: 今の局面から解ける手順を探し、その最初の手のねじに金色の輪を出す(使うと評価が下がる)
   async function showHint() {
@@ -1815,16 +1857,39 @@
     const path = id === boardId ? solveFull(level.plates, level.list, level.queue, level.model, SOLVE_BUDGET, hist.map(h => h.i)) : null;
     btn.disabled = false;
     if (id !== boardId || ended || (path && !path.length)) return;   // 外し終えてクリアの画面を待っているところ
-    if (!path) { toast('ここからは解ける手順が見つからない。詰んだら「解ける所まで戻る」が使える'); return; }
+    if (!path) { toast('ここからは解ける手順が見つからない。詰んだら「解ける所まで戻る」が使える', 'oopsFace'); return; }
     const s = screws[path[0]];
     hint = { s, t: 5, go: true };
     play.hints++;
-    toast(known(s.plank) && !isBlocked(s) ? '金色の輪のねじが次の一手' : '金色の輪のねじが次の一手（揺れが収まれば外せる）');
+    toast(known(s.plank) && !isBlocked(s) ? '金色の輪のねじが次の一手' : '次は金色の輪（揺れが収まってから）', 'idea');
   }
+  // ---- キャラ ----
+  // 画像は assets/chara/ に置く(scripts/prep_chara.py が art/chara/ の原画から作る)。
+  // 起動時に読み込んでおき、場面ごとに差し替える。読めなかったときは出さない(単体で開いたページなど)
+  const CHARA = { clear: 'clear.webp', good: 'good.webp', oops: 'oops.webp', cry: 'cry.webp', idea: 'idea-face.webp', oopsFace: 'oops-face.webp' };
+  const charaOk = {};
+  for (const k in CHARA) {
+    const im = new Image();
+    im.onload = () => { charaOk[k] = im.src; };
+    im.src = 'assets/chara/' + CHARA[k];
+  }
+  // 付け直して、出てくる動きを最初から
+  function showChara(img, k, anim) {
+    img.classList.remove('in', 'hop', 'sag');
+    img.hidden = !charaOk[k];
+    if (img.hidden) return;
+    img.src = charaOk[k];
+    void img.offsetWidth;
+    if (anim) img.classList.add(anim);
+  }
+
   let toastTimer = null;
-  function toast(msg) {
+  function toast(msg, face) {
     const t = document.getElementById('toast');
-    t.textContent = msg;
+    document.getElementById('toastMsg').textContent = msg;
+    const img = document.getElementById('toastFace');
+    showChara(img, face, face && full() ? 'in' : null);
+    t.classList.toggle('face', !img.hidden);
     t.hidden = false;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { t.hidden = true; }, 4500);
@@ -2027,6 +2092,7 @@
     stat.textContent = lines.join('\n');
     document.getElementById('mStars').hidden = false;
     stat.hidden = false;
+    return r;
   }
 
   // 勝ち負けの画面は少し遅れて出す。その間に別の盤面を読み込んだら取り消す(build で clearTimeout)
@@ -2043,7 +2109,11 @@
       void title.offsetWidth;                     // 付け直してアニメーションを最初から
       if (won) title.classList.add(mega() ? 'popMega' : full() ? 'pop' : 'popSoft');
       document.getElementById('mStars').hidden = document.getElementById('mStat').hidden = true;
-      if (won) showRating();
+      const r = won ? showRating() : null;
+      // キャラ: ★3 はクラッカーで大喜び、★2 はウインク、★1 は照れ笑い。詰みは座り込んで涙
+      const face = !won ? 'cry' : r.stars >= 3 ? 'clear' : r.stars === 2 ? 'good' : 'oops';
+      showChara(document.getElementById('mChara'), face,
+        !full() ? null : !won ? 'sag' : r.stars >= 3 && mega() ? 'hop' : 'in');
       document.getElementById('mSub').textContent = won
         ? (rand ? `ランダム（${DIFFS[cur.diff].name}）#${cur.seed} の板を全部落とした` : `ステージ ${cur.lv} の板を全部落とした`)
         : '待機スロットが埋まって、入れられるねじが無い';
