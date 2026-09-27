@@ -189,8 +189,17 @@
   .pickbtn.on { background: linear-gradient(#78e063, var(--go)); border-color: var(--go-deep); box-shadow: 0 4px 0 var(--go-deep); }
   .pickbtn:active, .subbtn:active { transform: translateY(3px); }
   /* 設定(歯車は盤面の右上。見出しの帯には3つ目のボタンを置く幅が無い) */
-  #gear { position: absolute; top: 2px; right: 0; width: 36px; height: 36px; }
-  #gear svg { width: 20px; height: 20px; }
+  #gear, #hintBtn { position: absolute; top: 2px; width: 36px; height: 36px; }
+  #gear { right: 0; }
+  #hintBtn { left: 0; }
+  #gear svg, #hintBtn svg { width: 20px; height: 20px; }
+  #hintBtn:disabled { filter: saturate(0.4); cursor: progress; }
+  /* クリアの評価: 星3つと、時間・ヒント・戻るの回数・自己ベスト */
+  #mStars { display: flex; justify-content: center; gap: 6px; font-size: 38px; line-height: 1; }
+  #mStars span { color: rgba(90, 45, 12, 0.45); text-shadow: 0 2px 0 rgba(255, 255, 255, 0.25); }
+  #mStars span.on { color: var(--gold); text-shadow: 0 0 10px rgba(255, 226, 122, 0.7), 0 3px 0 #8a5600; animation: starPop 0.4s cubic-bezier(.2, 1.7, .4, 1) both; }
+  @keyframes starPop { 0% { transform: scale(0.2); } 100% { transform: none; } }
+  #mStat { margin: 0; color: var(--ink-edge); font-weight: 700; font-size: 13px; line-height: 1.6; font-variant-numeric: tabular-nums; white-space: pre-line; }
   .setLabel { margin: 0; font-weight: 800; font-size: 15px; color: var(--ink-edge); text-align: left; }
   /* 紙吹雪を重ねる透明なキャンバス。クリア画面の上にも降らせる */
   #fx { position: absolute; inset: 0; pointer-events: none; }
@@ -207,7 +216,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .woodbtn:active, .gobtn:active, .pickbtn:active, .subbtn:active { transform: none; }
-    #mTitle.pop, #mTitle.popSoft, .coin.glow { animation: none; }
+    #mTitle.pop, #mTitle.popSoft, .coin.glow, #mStars span.on { animation: none; }
   }
 </style>
 
@@ -235,6 +244,12 @@
   <div id="stage">
     <canvas id="cv"></canvas>
     <div id="toast" hidden></div>
+    <button id="hintBtn" class="woodbtn" type="button" aria-label="ヒント">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V17h5.2v-1.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z" fill="none" stroke="#fff8ea" stroke-width="2.2" stroke-linejoin="round"/>
+        <path d="M9.6 20h4.8" stroke="#fff8ea" stroke-width="2.2" stroke-linecap="round"/>
+      </svg>
+    </button>
     <button id="gear" class="woodbtn" type="button" aria-label="設定">
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M12 2.8l1.6 2.4 2.8-.8.6 2.8 2.8.6-.8 2.8 2.4 1.6-2.4 1.6.8 2.8-2.8.6-.6 2.8-2.8-.8L12 21.2l-1.6-2.4-2.8.8-.6-2.8-2.8-.6.8-2.8L2.6 12l2.4-1.6-.8-2.8 2.8-.6.6-2.8 2.8.8z" fill="none" stroke="#fff8ea" stroke-width="2" stroke-linejoin="round"/>
@@ -245,6 +260,8 @@
       <div class="card">
         <p id="mTitle" class="outlined"></p>
         <p id="mSub"></p>
+        <div id="mStars" hidden><span>★</span><span>★</span><span>★</span></div>
+        <p id="mStat" hidden></p>
         <button id="mUndo" class="gobtn" type="button" hidden>解ける所まで戻る</button>
         <button id="mBtn" class="gobtn" type="button"></button>
         <button id="mBack" class="subbtn" type="button" hidden>ステージに戻る</button>
@@ -337,7 +354,9 @@
   let level = null;      // 今の盤面の元データ(板、ねじの並び、箱の順番、見積もり)。戻る先を探すのに使う
   let hist = [];         // 外した手の記録: { i: ねじの番号, phys: 外す直前の板の状態 }
   let boardId = 0;       // 盤面を読み込むたびに増やす(戻る先を探している間に盤面が替わったら捨てる)
-  let hint = null;       // 戻したあと、分かれ目になった手のねじに出す赤い輪: { s, t: 残り秒数 }
+  let hint = null;       // ねじに出す輪: { s, t: 残り秒数, go: true ならヒント(金)、false なら戻したあとの分かれ目(赤) }
+  let play = { t: 0, hints: 0, rewinds: 0 };   // この盤面で遊んだ時間(秒。クリアや詰みの画面の間は止まる)、ヒントと戻るを使った回数
+  const PAR_PER_SCREW = 4;   // 評価の目安の時間: ねじ1本あたりの秒数
   let quiet = false;     // 記録から局面を組み直している間は音を出さない
 
   const cv = document.getElementById('cv');
@@ -1428,6 +1447,7 @@
     const data = genLevel(lv, seed);
     level = { plates: data.plates, list: data.screws, queue: data.queue.slice(), model: data.model };
     hist = [];
+    play = { t: 0, hints: 0, rewinds: 0 };
     clearFx();
     hint = null;
     boardId++;
@@ -1745,8 +1765,24 @@
     if (k === null || id !== boardId) return;
     const back = hist.length - k, fork = screws[hist[k].i];
     rewindTo(k);
-    hint = { s: fork, t: 4 };
+    play.rewinds++;
+    hint = { s: fork, t: 4, go: false };
     toast(k ? `${back}手戻した。赤い輪のねじを外したのが分かれ目` : '最初まで戻した。赤い輪のねじを外したのが分かれ目');
+  }
+  // ヒント: 今の局面から解ける手順を探し、その最初の手のねじに金色の輪を出す(使うと評価が下がる)
+  async function showHint() {
+    const btn = document.getElementById('hintBtn'), id = boardId;
+    if (ended || btn.disabled) return;
+    btn.disabled = true;
+    await new Promise(r => setTimeout(r, 20));
+    const path = id === boardId ? solveFull(level.plates, level.list, level.queue, level.model, SOLVE_BUDGET, hist.map(h => h.i)) : null;
+    btn.disabled = false;
+    if (id !== boardId || ended || (path && !path.length)) return;   // 外し終えてクリアの画面を待っているところ
+    if (!path) { toast('ここからは解ける手順が見つからない。詰んだら「解ける所まで戻る」が使える'); return; }
+    const s = screws[path[0]];
+    hint = { s, t: 5, go: true };
+    play.hints++;
+    toast(known(s.plank) && !isBlocked(s) ? '金色の輪のねじが次の一手' : '金色の輪のねじが次の一手（揺れが収まれば外せる）');
   }
   let toastTimer = null;
   function toast(msg) {
@@ -1773,6 +1809,7 @@
   const $ = id => document.getElementById(id);
   $('retry').addEventListener('click', restart);
   $('mUndo').addEventListener('click', rewind);
+  $('hintBtn').addEventListener('click', showHint);
   $('mBtn').addEventListener('click', () => {
     const won = $('mBtn').dataset.won === '1';
     if (!won) restart();
@@ -1904,6 +1941,43 @@
     if (buffer.includes(null)) return false;
     return !screws.some(s => s.state === 'board' && known(s.plank) && openBoxFor(s.color) && !isBlocked(s, true));
   }
+  // ---- クリアの評価 ----
+  // ★3 から、ヒント1回ごと・戻る1回ごとに1つ減らし、目安の時間(ねじの本数 × PAR_PER_SCREW 秒)を超えたらもう1つ減らす。最低 ★1
+  const clock = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+  function rate() {
+    const par = level.list.length * PAR_PER_SCREW;
+    return { stars: Math.max(1, 3 - play.hints - play.rewinds - (play.t > par ? 1 : 0)), par };
+  }
+  // ステージごとの自己ベスト(星が多い方、同じ星なら速い方)。ランダムは毎回ちがう盤面なので残さない
+  function saveBest(r) {
+    if (cur.mode !== 'stage') return null;
+    let all = {};
+    try { all = JSON.parse(localStorage.getItem('screw-best') || '{}') || {}; } catch (e) {}
+    const old = all[cur.lv] || null;
+    const better = !old || r.stars > old.stars || (r.stars === old.stars && play.t < old.t);
+    if (better) {
+      all[cur.lv] = { stars: r.stars, t: Math.round(play.t) };
+      try { localStorage.setItem('screw-best', JSON.stringify(all)); } catch (e) {}
+    }
+    return { old, better };
+  }
+  function showRating() {
+    const r = rate(), best = saveBest(r);
+    const stars = [...document.querySelectorAll('#mStars span')];
+    stars.forEach((el, i) => {
+      el.classList.remove('on');
+      void el.offsetWidth;
+      if (i < r.stars) { el.classList.add('on'); el.style.animationDelay = `${0.25 + i * 0.18}s`; }
+    });
+    for (let i = 0; i < r.stars; i++) tone(880 * Math.pow(1.26, i), 0.12, 'triangle', 0.14, 1.0, 0.25 + i * 0.18);   // 星が付くたびに1音
+    const lines = [`時間 ${clock(play.t)}（目安 ${clock(r.par)}）`, `ヒント ${play.hints}回・戻る ${play.rewinds}回`];
+    if (best) lines.push(best.old && !best.better ? `自己ベスト ${'★'.repeat(best.old.stars)}${'☆'.repeat(3 - best.old.stars)} ${clock(best.old.t)}` : '自己ベスト更新');
+    const stat = document.getElementById('mStat');
+    stat.textContent = lines.join('\n');
+    document.getElementById('mStars').hidden = false;
+    stat.hidden = false;
+  }
+
   // 勝ち負けの画面は少し遅れて出す。その間に別の盤面を読み込んだら取り消す(build で clearTimeout)
   let finishTimer = null;
   function finish(won) {
@@ -1917,6 +1991,8 @@
       title.classList.remove('pop', 'popSoft');
       void title.offsetWidth;                     // 付け直してアニメーションを最初から
       if (won) title.classList.add(loud() ? 'pop' : 'popSoft');
+      document.getElementById('mStars').hidden = document.getElementById('mStat').hidden = true;
+      if (won) showRating();
       document.getElementById('mSub').textContent = won
         ? (rand ? `ランダム（${DIFFS[cur.diff].name}）#${cur.seed} の板を全部落とした` : `ステージ ${cur.lv} の板を全部落とした`)
         : '待機スロットが埋まって、入れられるねじが無い';
@@ -1945,6 +2021,8 @@
       if (s.shake > 0) s.shake = Math.max(0, s.shake - dt);
     }
     if (hint && ((hint.t -= dt) <= 0 || hint.s.state !== 'board')) hint = null;
+    // 遊んだ時間: クリアや詰みの画面、設定や難しさ選びを開いている間は数えない
+    if (!ended && document.getElementById('settings').hidden && document.getElementById('pick').hidden) play.t += dt;
     for (const s of screws) {
       if (s.state === 'fly') {
         s.t += dt / FLY;
@@ -2136,11 +2214,14 @@
       ctx.restore();
     }
 
-    // 戻したあと、分かれ目になった手のねじに赤い輪
+    // ヒントのねじに金色の輪、戻したあとの分かれ目のねじに赤い輪
     if (hint && hint.s.plank.vis > 0.5) {
       const w = holeWorld(hint.s.plank, hint.s.hole), k = 0.5 + 0.5 * Math.sin(hint.t * 9);
+      const rgb = hint.go ? '255,214,60' : '255,56,56';
+      ctx.beginPath(); ctx.arc(w.x, w.y, SR + 10 + 3 * k, 0, TAU);          // 外側のぼかし(どの色のねじの上でも見えるように)
+      ctx.lineWidth = 9; ctx.strokeStyle = `rgba(${rgb},${0.18 + 0.2 * k})`; ctx.stroke();
       ctx.beginPath(); ctx.arc(w.x, w.y, SR + 5 + 2 * k, 0, TAU);
-      ctx.lineWidth = 4; ctx.strokeStyle = `rgba(255,56,56,${0.55 + 0.45 * k})`; ctx.stroke();
+      ctx.lineWidth = 4; ctx.strokeStyle = `rgba(${rgb},${0.6 + 0.4 * k})`; ctx.stroke();
     }
 
     // 飛んでいるねじ
