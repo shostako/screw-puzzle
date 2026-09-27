@@ -47,7 +47,7 @@
     display: grid;
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    max-width: 420px;
+    max-width: var(--board-w, 420px);     /* 盤面の幅にそろえる(fit が入れる) */
     width: 100%;
     margin-inline: auto;
   }
@@ -63,15 +63,15 @@
     align-items: center;
     line-height: 1.1;
     font-weight: 800;
-    font-size: 24px;
+    font-size: calc(24px * var(--ui, 1));
     letter-spacing: 0.04em;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  .tools { justify-self: start; display: flex; gap: 8px; }
+  .tools { justify-self: start; display: flex; gap: calc(8px * var(--ui, 1)); }
   .woodbtn {
-    width: 42px;
-    height: 42px;
+    width: calc(42px * var(--ui, 1));
+    height: calc(42px * var(--ui, 1));
     padding: 0;
     border-radius: 50%;
     border: 3px solid var(--wood-edge);
@@ -85,21 +85,21 @@
   }
   /* 当たり判定: 見た目の外へ 6px(やり直し・サイコロは 54px、ヒント・歯車は 48px 四方で押せる) */
   .woodbtn::before { content: ''; position: absolute; inset: -9px; border-radius: 50%; }
-  .woodbtn svg { width: 22px; height: 22px; }
+  .woodbtn svg { width: calc(22px * var(--ui, 1)); height: calc(22px * var(--ui, 1)); }
   .woodbtn:active, .woodbtn.pressed { transform: translateY(2px); box-shadow: 0 1px 0 var(--wood-shadow), inset 0 2px 0 rgba(255, 255, 255, 0.35); }
   .woodbtn:focus-visible, #mBtn:focus-visible, .pickbtn:focus-visible, .subbtn:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
   #prog {
     justify-self: end;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: calc(6px * var(--ui, 1));
     font-weight: 800;
-    font-size: 20px;
+    font-size: calc(20px * var(--ui, 1));
     font-variant-numeric: tabular-nums;
   }
   .coin {
-    width: 24px;
-    height: 24px;
+    width: calc(24px * var(--ui, 1));
+    height: calc(24px * var(--ui, 1));
     border-radius: 50%;
     background: radial-gradient(circle at 35% 30%, #fff3b0, var(--gold) 45%, #e09a12);
     box-shadow: 0 2px 0 #8a5600, inset 0 0 0 2px rgba(150, 90, 0, 0.5);
@@ -113,7 +113,7 @@
     justify-content: center;
   }
   canvas { display: block; touch-action: none; }
-  #tSub { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; }
+  #tSub { font-size: calc(12px * var(--ui, 1)); font-weight: 700; letter-spacing: 0.06em; }
   #modal, #pick, #settings {
     position: absolute;
     inset: 0;
@@ -216,10 +216,13 @@
   .pickbtn.on { background: linear-gradient(#78e063, var(--go)); border-color: var(--go-deep); box-shadow: 0 4px 0 var(--go-deep); }
   .pickbtn:active, .subbtn:active { transform: translateY(3px); }
   /* 設定(歯車は盤面の右上。見出しの帯には3つ目のボタンを置く幅が無い) */
-  #gear, #hintBtn { position: absolute; top: 2px; width: 36px; height: 36px; }
-  #gear { right: 0; }
-  #hintBtn { left: 0; }
-  #gear svg, #hintBtn svg { width: 20px; height: 20px; }
+  /* 盤面の上の角に置く(--board-x は盤面の左右の余白。スマホでは 0、タブレットでは盤面が細くなるぶん内側へ寄る) */
+  #gear, #hintBtn { position: absolute; top: 2px; width: calc(36px * var(--ui, 1)); height: calc(36px * var(--ui, 1)); }
+  #gear { right: var(--board-x, 0px); }
+  #hintBtn { left: var(--board-x, 0px); }
+  #gear svg, #hintBtn svg { width: calc(20px * var(--ui, 1)); height: calc(20px * var(--ui, 1)); }
+  /* 知らせと、クリア・詰み・難しさ選び・設定のカードも同じ倍率で大きくする */
+  #toast, .mbox, #pick .card, #settings .card { zoom: var(--ui, 1); }
   #hintBtn:disabled { filter: saturate(0.4); cursor: progress; }
   /* クリアの評価: 星3つと、時間・ヒント・戻るの回数・自己ベスト */
   #mStars { display: flex; justify-content: center; gap: 6px; font-size: 38px; line-height: 1; }
@@ -2741,9 +2744,17 @@
   }
 
   // ---- 画面合わせ ----
+  // 画面の大きさから、上部の帯・ボタン・知らせ・カードの倍率(--ui)を決める。スマホは 1、大きなタブレットの縦向きで最大 1.8。
+  // 倍率は #app(画面から安全域を引いた大きさ)だけで決め、盤面の置き場には頼らない。
+  // 倍率で上部の帯が高くなると置き場が縮むので、置き場から決めると行ったり来たりする
+  const app = document.getElementById('app');
   function fit() {
+    const ui = Math.max(1, Math.min(app.clientWidth / 390, app.clientHeight / 800, 1.8));
+    app.style.setProperty('--ui', ui.toFixed(3));
     const aw = stage.clientWidth, ah = stage.clientHeight;
     scale = Math.min(aw / W, ah / H);
+    app.style.setProperty('--board-w', (W * scale).toFixed(1) + 'px');
+    app.style.setProperty('--board-x', ((aw - W * scale) / 2).toFixed(1) + 'px');
     dpr = window.devicePixelRatio || 1;
     cv.style.width = W * scale + 'px';
     cv.style.height = H * scale + 'px';
@@ -2753,6 +2764,10 @@
     fitFx();
   }
   window.addEventListener('resize', fit);
+  // ウィンドウの大きさが変わらなくても、盤面の置き場(#stage)の大きさは変わることがある。
+  // アプリで安全域の余白があとから効いたとき、丸ゴシックの読み込みやランダムの2行の題名で上部の高さが変わったとき。
+  // 収め直さないと、盤面が置き場からはみ出して上のボタンに被さる(2026-09-27、ユーザーの実機の感想「ボタンが箱に重なっている感じ」を受けて)
+  if (window.ResizeObserver) new ResizeObserver(() => fit()).observe(stage);
 
   // ---- ループ ----
   const STEP = 1000 / 60;
