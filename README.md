@@ -4,6 +4,7 @@
 
 - 試作本体: `index.html`（1ファイル、Matter.js 0.19.0 を cdnjs から読み込む）
 - 公開版: https://claude.ai/artifact/QhdRnGorN51nNAbN9JppKJ （同じ会話か、この URL を `url` に渡して再公開すると更新される）
+- GitHub Pages: https://shostako.github.io/screw-puzzle/ （master への push で自動配信。中身は `scripts/build.sh` が包んだ `dist/index.html`）
 
 ## 現在のルール
 
