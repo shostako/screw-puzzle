@@ -23,10 +23,10 @@ FACES = {
     'idea': ('idea', (0, 20, 940, 960)),
     'oops': ('oops', (100, 40, 940, 880)),
     'good': ('good', (100, 60, 940, 900)),
-    'cry': ('cry', (60, 160, 980, 1080)),
+    'fight': ('fight', (0, 80, 900, 980)),
     'smile': ('face', (180, 40, 1100, 960)),
 }
-BODIES = ('clear', 'good', 'oops', 'cry', 'idea')
+BODIES = ('clear', 'good', 'oops', 'cry', 'idea', 'panic', 'fight')
 RIM = 5            # idle に付ける白いフチの太さ(縦 540px のときの画素)。ほかの絵のフチとだいたい同じ
 
 
