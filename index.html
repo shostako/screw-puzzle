@@ -2058,7 +2058,7 @@
 
   // ---- 演出の強さ(設定) ----
   // 'low' = 控えめ: クラッカー2発と紙吹雪、光、あとからの紙吹雪、ファンファーレに和音とキラキラ。
-  // 'high' = 派手め: さらにクラッカー4発、花火、コインの雨、リボン、画面の揺れと虹色の光、太鼓とシンバル、箱が跳ねて星の尾を引く。
+  // 'high' = 派手め: さらにクラッカー4発、花火、コインの雨、降り続ける紙吹雪、画面の揺れと虹色の光、太鼓とシンバル、箱が跳ねて星の尾を引く。
   // (2026-09-27 に組み替え: それまでの「派手め」を「控えめ」にし、その上を作った。それまでの「控えめ」は無くした)
   // 振動もこれに従う。端末が「動きを減らす」設定なら、揺れ・光・花火は出さず、紙吹雪も少なくする
   let fxLevel = 'high';
@@ -2546,13 +2546,13 @@
         x1: tx, y1: ty, lift: 80 + rnd01() * 120, x: 0, y: 0, t: 0, life: 0.75, g: 0, vx: 0, vy: 0 }));
     }
   }
-  // 派手め: 上から降るリボン
-  function ribbons(n, colors) {
-    for (let k = 0; k < n; k++) parts.push({ kind: 'ribbon', x: rnd01() * fxW, y: -40 - rnd01() * 160, vx: (rnd01() - 0.5) * 40, vy: 60 + rnd01() * 60,
-      ph: rnd01() * TAU, len: 50 + rnd01() * 40, c: colors[k % colors.length], t: 0, life: 7, g: 0.12, rot: 0, vr: 0 });
+  // 上から降る紙吹雪を1回ぶん(画面の幅いっぱいに n 枚)
+  function rain(n, colors) {
+    for (let k = 0; k < n; k++) parts.push(paper(rnd01() * fxW, -20 - rnd01() * 120, (rnd01() - 0.5) * 60, 40 + rnd01() * 80, colors[k % colors.length], 0.35));
   }
   // クリアの演出。控えめ: 下の両隅のクラッカー2発(時差)と紙吹雪、光、あとから上からの紙吹雪、コインが光ってファンファーレ。
-  // 派手め: さらに両脇にもクラッカー(4発)、画面が揺れて虹色に光り、コインの雨、花火4発、リボン、太鼓とシンバルとファンファーレのもうひと節
+  // 派手め: さらに両脇にもクラッカー(4発)、画面が揺れて虹色に光り、コインの雨、花火4発、上からの紙吹雪を約4秒降らせ続ける、
+  // 太鼓とシンバルとファンファーレのもうひと節。(2026-09-27 にリボンをやめ、その分を降り続ける紙吹雪にした。ユーザー指定)
   function celebrate() {
     clearFx();
     const colors = [...new Set(level.queue)].map(c => COLORS[c].c).concat(['#ffe27a', '#ffffff']);
@@ -2572,14 +2572,14 @@
     }; });
     fanfare(p0, big);
     later(p0, () => { glowCoin(); vibe([40, 30, 40, 30, 40, 30, 80, 40, 260], [30, 40, 30, 40, 160]); });
-    if (full()) later(1.1, () => { for (let k = 0; k < 50; k++) parts.push(paper(rnd01() * fxW, -20 - rnd01() * 120, (rnd01() - 0.5) * 60, 40 + rnd01() * 80, colors[k % colors.length], 0.35)); });
+    if (full()) later(1.1, () => rain(50, colors));
     if (!big) return;
     later(0.6, () => coinShower(14));
     [0.95, 1.25, 1.55, 1.85].forEach((t, k) => later(t, () => {
       firework(fxW * (0.2 + 0.6 * rnd01()), fxH * (0.12 + 0.26 * rnd01()), colors[k % (colors.length - 2)]);
       boom(0);
     }));
-    later(1.2, () => ribbons(12, colors));
+    for (let k = 0; k < 9; k++) later(1.6 + k * 0.45, () => rain(14, colors));   // 1.6〜5.2 秒、0.45 秒おきに降らせ足す
   }
   function updateFx(dt) {
     for (const p of poppers) {
@@ -2664,15 +2664,6 @@
         fxx.beginPath(); fxx.arc(0, -1, 8.5, 0, TAU); fxx.fillStyle = '#ffc93c'; fxx.fill();
         fxx.beginPath(); fxx.arc(-2.5, -3.5, 3, 0, TAU); fxx.fillStyle = '#fff3b0'; fxx.fill();
         fxx.restore(); continue;
-      }
-      if (q.kind === 'ribbon') {                  // リボン: 波打つ帯
-        fxx.strokeStyle = q.c; fxx.lineWidth = 5; fxx.lineCap = 'round'; fxx.lineJoin = 'round';
-        fxx.beginPath();
-        for (let i = 0; i <= 10; i++) {
-          const u = i / 10, xx = q.x + Math.sin(q.t * 6 + q.ph + u * 7) * 9, yy = q.y - u * q.len;
-          if (i) fxx.lineTo(xx, yy); else fxx.moveTo(xx, yy);
-        }
-        fxx.stroke(); fxx.restore(); continue;
       }
       fxx.translate(q.x, q.y); fxx.rotate(q.rot);
       fxx.fillStyle = q.c;
